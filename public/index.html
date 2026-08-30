@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Panel">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#12161D">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%2312161D'/%3E%3Ccircle cx='50' cy='56' r='30' fill='none' stroke='%235AB3B0' stroke-width='7'/%3E%3Cline x1='50' y1='56' x2='68' y2='40' stroke='%23F1EDE4' stroke-width='6' stroke-linecap='round'/%3E%3Ccircle cx='50' cy='56' r='4' fill='%23F1EDE4'/%3E%3C/svg%3E">
+<title>Panel — Control diario</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#12161D;
+    --panel:#1B212B;
+    --panel-alt:#222A36;
+    --stroke:#2C3542;
+    --text:#F1EDE4;
+    --muted:#8891A0;
+    --ok:#4FA87C;
+    --warn:#E3A94D;
+    --danger:#DD5B4F;
+    --accent:#5AB3B0;
+    --needle:#F1EDE4;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #1a2029 0%, var(--bg) 55%);
+    color:var(--text);
+    font-family:'Manrope',sans-serif;
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .num{font-family:'Space Mono',monospace;font-variant-numeric:tabular-nums;}
+  .wrap{max-width:640px;margin:0 auto;padding:18px 16px 100px;}
+
+  /* Header */
+  header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;padding-top:6px;}
+  header .brand{font-family:'Space Mono',monospace;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);}
+  header .brand span{color:var(--muted);}
+  header .date{font-size:12px;color:var(--muted);text-align:right;}
+
+  /* Tabs */
+  nav.tabs{
+    position:fixed;bottom:0;left:0;right:0;
+    display:flex;background:var(--panel);
+    border-top:1px solid var(--stroke);
+    padding:8px 6px calc(8px + env(safe-area-inset-bottom));
+    z-index:20;
+  }
+  nav.tabs button{
+    flex:1;background:none;border:none;color:var(--muted);
+    font-family:'Manrope',sans-serif;font-weight:700;font-size:10.5px;
+    letter-spacing:.02em;text-transform:uppercase;
+    padding:8px 2px;border-radius:10px;cursor:pointer;
+  }
+  nav.tabs button.active{color:var(--bg);background:var(--accent);}
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--stroke);
+    border-radius:16px;
+    padding:16px;
+    margin-bottom:14px;
+  }
+  .card h2{
+    margin:0 0 12px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--muted);font-weight:700;
+  }
+
+  /* Alerts */
+  .alert{
+    display:flex;gap:10px;align-items:flex-start;
+    border-radius:12px;padding:12px 14px;margin-bottom:10px;
+    font-size:13px;line-height:1.4;border:1px solid transparent;
+  }
+  .alert.warn{background:rgba(227,169,77,.12);border-color:rgba(227,169,77,.35);color:#F0CE93;}
+  .alert.danger{background:rgba(221,91,79,.12);border-color:rgba(221,91,79,.35);color:#F3A79E;}
+  .alert .dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:none;}
+  .alert.warn .dot{background:var(--warn);}
+  .alert.danger .dot{background:var(--danger);}
+  .alert-empty{color:var(--muted);font-size:13px;padding:6px 2px;}
+
+  /* Gauge cluster (3 dials) */
+  .dials{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+  .dial{text-align:center;}
+  .dial svg{width:100%;height:auto;display:block;}
+  .dial .label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:4px;}
+  .dial .amt{font-size:13px;margin-top:2px;}
+  .dial .amt .of{color:var(--muted);font-size:11px;}
+
+  /* Fuel-style horizontal bars for fixed categories */
+  .fuelrow{margin-bottom:14px;}
+  .fuelrow:last-child{margin-bottom:0;}
+  .fuelrow .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;}
+  .fuelrow .name{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;}
+  .fuelrow .figs{font-size:12px;color:var(--muted);}
+  .fuelrow .figs b{color:var(--text);font-weight:600;}
+  .track{height:10px;border-radius:6px;background:var(--panel-alt);overflow:hidden;position:relative;border:1px solid var(--stroke);}
+  .fill{height:100%;border-radius:6px;transition:width .4s ease;}
+  .fill.ok{background:linear-gradient(90deg,#3E9268,var(--ok));}
+  .fill.warn{background:linear-gradient(90deg,#C68C36,var(--warn));}
+  .fill.danger{background:linear-gradient(90deg,#B84438,var(--danger));}
+  .pace-tick{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.55;}
+
+  /* Forms */
+  label{display:block;font-size:11px;color:var(--muted);margin:10px 0 5px;letter-spacing:.03em;}
+  label:first-child{margin-top:0;}
+  input,select,textarea{
+    width:100%;background:var(--panel-alt);border:1px solid var(--stroke);
+    color:var(--text);border-radius:10px;padding:11px 12px;font-size:15px;
+    font-family:'Manrope',sans-serif;
+  }
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
+  .seg{display:flex;gap:6px;}
+  .seg button{
+    flex:1;padding:10px 6px;border-radius:10px;border:1px solid var(--stroke);
+    background:var(--panel-alt);color:var(--muted);font-weight:700;font-size:12px;
+    letter-spacing:.03em;cursor:pointer;
+  }
+  .seg button.active{background:var(--accent);color:var(--bg);border-color:var(--accent);}
+  .btn-primary{
+    width:100%;margin-top:16px;padding:13px;border-radius:12px;border:none;
+    background:var(--accent);color:var(--bg);font-weight:800;font-size:14px;
+    letter-spacing:.02em;cursor:pointer;
+  }
+  .btn-primary:active{transform:scale(.99);}
+  .btn-primary:disabled{opacity:.6;}
+  .btn-ghost{
+    width:100%;margin-top:8px;padding:11px;border-radius:12px;
+    border:1px solid var(--stroke);background:transparent;color:var(--muted);
+    font-weight:700;font-size:12px;cursor:pointer;
+  }
+  .toast{
+    position:fixed;top:16px;left:50%;transform:translateX(-50%);
+    background:var(--ok);color:#0E1A14;font-weight:700;font-size:13px;
+    padding:10px 18px;border-radius:30px;z-index:50;opacity:0;pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(4px);}
+
+  /* History */
+  .hist-item{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:10px 0;border-bottom:1px solid var(--stroke);
+  }
+  .hist-item:last-child{border-bottom:none;}
+  .hist-item .meta{font-size:11px;color:var(--muted);margin-top:2px;}
+  .hist-item .amt{font-family:'Space Mono',monospace;font-weight:700;}
+  .amt.gasto{color:var(--danger);}
+  .amt.ingreso{color:var(--ok);}
+  .amt.ahorro{color:var(--accent);}
+  .hist-item button{
+    background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:4px 8px;
+  }
+  .empty-state{color:var(--muted);font-size:13px;text-align:center;padding:24px 0;}
+
+  .fixed-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+  .fixed-row input:nth-of-type(1){flex:1.4;}
+  .fixed-row input:nth-of-type(2){flex:1;}
+  .fixed-row button{background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;flex:none;}
+  .debt-row{flex-wrap:wrap;}
+  .debt-row input{flex:1 1 45%;min-width:100px;font-size:13px;padding:9px 8px;}
+  .split{display:flex;gap:8px;}
+  .split > div{flex:1;}
+
+  .setup-note{font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:14px;}
+  .divider{height:1px;background:var(--stroke);margin:16px 0;}
+  .small-label{font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px;}
+
+  /* Proyecciones */
+  .proj-item{padding:12px 0;border-bottom:1px solid var(--stroke);}
+  .proj-item:last-child{border-bottom:none;}
+  .proj-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+  .proj-desc{font-size:14px;font-weight:700;}
+  .proj-badge{display:inline-block;margin-top:8px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;border:1px solid;letter-spacing:.02em;}
+  .proj-explain{font-size:13px;margin-top:8px;line-height:1.4;}
+  .proj-detail{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;}
+  .proj-actions{display:flex;gap:8px;margin-top:10px;}
+  .proj-actions button{flex:1;font-size:11px;padding:9px 6px;margin-top:0;}
+
+  /* Bot chat */
+  .chat-thread{margin-bottom:6px;}
+  .chat-msg{padding:8px 0;border-bottom:1px solid var(--stroke);}
+  .chat-msg:last-child{border-bottom:none;}
+  .chat-role{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:3px;}
+  .chat-msg.user .chat-role{color:var(--accent);}
+  .chat-text{font-size:13px;line-height:1.5;white-space:pre-wrap;}
+  .chat-text.error{color:var(--danger);}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div class="toast" id="toast"></div>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="hoy" class="active">Hoy</button>
+  <button data-tab="registrar">Registrar</button>
+  <button data-tab="proyectar">Proyectar</button>
+  <button data-tab="historial">Historial</button>
+  <button data-tab="ajustes">Ajustes</button>
+</nav>
+
+<script>
+const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
+
+const DEFAULT_CONFIG = {
+  ingresoFijo: 6000,
+  apoyoVariable: 2500,
+  allocPct: { ahorro: 12, estiloVida: 73, diversion: 15 },
+  fixedExpenses: [
+    { id: 'gasolina',  name: 'Gasolina',       icon:'⛽', monthly: 1600 },
+    { id: 'gym',       name: 'Gym',            icon:'🏋️', monthly: 1100 },
+    { id: 'psic1',     name: 'Psicóloga 1',    icon:'🧠', monthly: 300 },
+    { id: 'psic2',     name: 'Psicóloga 2',    icon:'🧠', monthly: 300 },
+    { id: 'seguro',    name: 'Seguro',         icon:'🛡️', monthly: 423 },
+    { id: 'caja',      name: 'Caja Popular',   icon:'🏦', monthly: 500 },
+    { id: 'icloud',    name: 'iCloud',         icon:'☁️', monthly: 179 },
+  ],
+  // Placeholder con los últimos datos conocidos (cortes de julio 2026) — actualiza el saldo
+  // real en Ajustes, ya que va bajando cada mes con los abonos.
+  debt: {
+    cards: [
+      { id:'joy',      name:'JOY',      saldo:7809.71,  tasaMensual:5.6, abonoMensual:2000 },
+      { id:'clasica',  name:'CLÁSICA',  saldo:10034.22, tasaMensual:1.4, abonoMensual:0 },
+    ]
+  }
+};
+
+let state = {
+  config: null,
+  entries: [],
+  proyecciones: [],
+  tab: 'hoy',
+  showExport: false,
+  entryDraft: { type:'gasto', category:null, amount:'', note:'', date: todayISO() },
+  projDraft: { desc:'', amount:'', category:'otro', targetMonth: nextMonthKey() },
+  chat: { messages: [], loading: false },
+  accessCode: ''
+};
+
+function todayISO(){
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function nextMonthKey(){
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth()+1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function fmt(n){
+  return '$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:0,maximumFractionDigits:0});
+}
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadAll(){
+  try{
+    const c = localStorage.getItem('panel_config');
+    state.config = c ? JSON.parse(c) : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  }catch(e){ state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
+  if(!state.config.debt) state.config.debt = { cards: [] };
+  if(typeof state.config.apoyoVariable !== 'number') state.config.apoyoVariable = 0;
+  try{
+    const e = localStorage.getItem('panel_entries');
+    state.entries = e ? JSON.parse(e) : [];
+  }catch(e){ state.entries = []; }
+  try{
+    const p = localStorage.getItem('panel_proyecciones');
+    state.proyecciones = p ? JSON.parse(p) : [];
+  }catch(e){ state.proyecciones = []; }
+  try{
+    state.accessCode = localStorage.getItem('panel_access_code') || '';
+  }catch(e){ state.accessCode = ''; }
+  render();
+}
+async function saveConfig(){
+  try{ localStorage.setItem('panel_config', JSON.stringify(state.config)); }catch(e){ showToast('No se pudo guardar'); }
+}
+async function saveEntries(){
+  try{ localStorage.setItem('panel_entries', JSON.stringify(state.entries)); }catch(e){ showToast('No se pudo guardar'); }
+}
+async function saveProyecciones(){
+  try{ localStorage.setItem('panel_proyecciones', JSON.stringify(state.proyecciones)); }catch(e){ showToast('No se pudo guardar'); }
+}
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 1600);
+}
+
+/* ---------- date helpers ---------- */
+function startOfWeek(d){
+  const dt = new Date(d); const day = (dt.getDay()+6)%7; // Monday=0
+  dt.setHours(0,0,0,0); dt.setDate(dt.getDate()-day);
+  return dt;
+}
+function endOfWeek(d){ const s = startOfWeek(d); const e = new Date(s); e.setDate(s.getDate()+6); e.setHours(23,59,59,999); return e; }
+function daysInMonth(d){ return new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); }
+function inRange(dateStr, start, end){
+  const t = new Date(dateStr+'T12:00:00').getTime();
+  return t >= start.getTime() && t <= end.getTime();
+}
+function monthEntries(catId, type){
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  return state.entries.filter(e=>{
+    const d = new Date(e.date+'T12:00:00');
+    return d.getFullYear()===y && d.getMonth()===m && (!type || e.type===type) && (!catId || e.category===catId);
+  });
+}
+function weekEntries(catId, type){
+  const now = new Date(); const s = startOfWeek(now), e = endOfWeek(now);
+  return state.entries.filter(x=> (!type || x.type===type) && (!catId || x.category===catId) && inRange(x.date, s, e));
+}
+function sum(arr){ return arr.reduce((a,b)=>a+Number(b.amount||0),0); }
+
+/* ---------- categories (shared by Registrar y Proyectar) ---------- */
+function categoryOptionsHtml(selected){
+  const cfg = state.config;
+  return [
+    ...cfg.fixedExpenses.map(c=>`<option value="${c.id}" ${selected===c.id?'selected':''}>${c.icon} ${escapeHtml(c.name)}</option>`),
+    `<option value="diversion" ${selected==='diversion'?'selected':''}>🎈 Diversión / Libre</option>`,
+    `<option value="otro" ${selected==='otro'?'selected':''}>Otro</option>`,
+  ].join('');
+}
+function catName(id){
+  const cfg = state.config;
+  if(id==='diversion') return 'Diversión/Libre';
+  if(id==='otro') return 'Otro';
+  const f = cfg.fixedExpenses.find(c=>c.id===id);
+  return f? f.name : (id||'');
+}
+
+/* ---------- alerts ---------- */
+function computeAlerts(){
+  const alerts = [];
+  const cfg = state.config;
+  const now = new Date();
+  const dim = daysInMonth(now);
+  const dayFrac = now.getDate()/dim;
+
+  // Fixed categories: pace-based monthly alert
+  cfg.fixedExpenses.forEach(cat=>{
+    const spent = sum(monthEntries(cat.id,'gasto'));
+    const expectedPace = cat.monthly * dayFrac;
+    if(cat.monthly>0 && spent > cat.monthly){
+      alerts.push({level:'danger', text:`Ya superaste tu presupuesto de ${cat.name} este mes: llevas ${fmt(spent)} de ${fmt(cat.monthly)}.`});
+    } else if(cat.monthly>0 && spent > expectedPace*1.25 && spent>0){
+      alerts.push({level:'warn', text:`Vas más rápido de lo normal en ${cat.name}: ${fmt(spent)} llevados, a este ritmo te vas a pasar antes de fin de mes.`});
+    }
+  });
+
+  // Diversión/Libre — weekly
+  const divMonthly = cfg.ingresoFijo * (cfg.allocPct.diversion/100);
+  const divWeekly = divMonthly / 4.33;
+  const divSpentWeek = sum(weekEntries('diversion','gasto'));
+  if(divSpentWeek >= divWeekly){
+    alerts.push({level:'danger', text:`Te pasaste de tu tope semanal de Diversión/Libre: ${fmt(divSpentWeek)} de ${fmt(divWeekly)}.`});
+  } else if(divSpentWeek >= divWeekly*0.8){
+    alerts.push({level:'warn', text:`Ya vas en ${Math.round(divSpentWeek/divWeekly*100)}% de tu tope semanal de Diversión/Libre. Cuídalo.`});
+  }
+
+  // Ahorro — monthly goal pace (informational, gentle)
+  const ahorroMonthly = cfg.ingresoFijo * (cfg.allocPct.ahorro/100);
+  const ahorroSaved = sum(monthEntries(null,'ahorro'));
+  if(dayFrac > 0.5 && ahorroSaved < ahorroMonthly*0.4){
+    alerts.push({level:'warn', text:`Ya pasó más de la mitad del mes y solo llevas ${fmt(ahorroSaved)} de tu meta de ahorro (${fmt(ahorroMonthly)}).`});
+  }
+
+  // Deuda con interés activa (informational)
+  const cards = (cfg.debt && cfg.debt.cards) || [];
+  const conInteres = cards.filter(c=>c.saldo>0 && c.tasaMensual>0);
+  if(conInteres.length){
+    const total = sum(conInteres.map(c=>({amount:c.saldo})));
+    alerts.push({level:'warn', text:`Tienes ${fmt(total)} de deuda generando interés (${conInteres.map(c=>c.name).join(', ')}). Cada gasto extra compite con pagarla más rápido.`});
+  }
+
+  return alerts;
+}
+
+/* ---------- Proyecciones: evaluación ---------- */
+function evaluateProjection(cfg, proj){
+  const now = new Date();
+  const parts = (proj.targetMonth||nextMonthKey()).split('-').map(Number);
+  const targetDate = new Date(parts[0], (parts[1]||1)-1, 1);
+  const monthsAhead = Math.max(0, (targetDate.getFullYear()-now.getFullYear())*12 + (targetDate.getMonth()-now.getMonth()));
+
+  const divMeta = cfg.ingresoFijo*(cfg.allocPct.diversion/100);
+  const ahorroMeta = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
+  const divSpent = sum(monthEntries('diversion','gasto'));
+  const ahorroSaved = sum(monthEntries(null,'ahorro'));
+
+  const dim = daysInMonth(now);
+  const dayFrac = now.getDate()/dim;
+  const remainingThisMonthDiv = Math.max(0, divMeta - divSpent);
+  const ahorroGap = Math.max(0, ahorroMeta*dayFrac - ahorroSaved);
+
+  // Colchón acumulado disponible entre hoy y el mes objetivo: lo que queda del presupuesto
+  // de Diversión/Libre de este mes, más un aporte conservador por cada mes futuro completo
+  // (presupuesto de diversión de ese mes + la mitad del apoyo variable, que no está prometido).
+  let acumulado = remainingThisMonthDiv;
+  for(let i=1;i<=monthsAhead;i++){
+    acumulado += divMeta + (cfg.apoyoVariable||0)*0.5;
+  }
+  acumulado -= ahorroGap;
+
+  const cards = (cfg.debt && cfg.debt.cards) || [];
+  const deudaConInteres = cards.filter(c=>c.saldo>0 && c.tasaMensual>0);
+
+  let level, headline;
+  if(deudaConInteres.length && proj.amount > acumulado*0.5){
+    level = 'danger';
+    headline = 'Mejor espera: tienes deuda generando interés y este gasto se comería buena parte de tu colchón disponible.';
+  } else if(proj.amount <= acumulado){
+    level = 'ok';
+    headline = monthsAhead===0
+      ? 'Sí te alcanza dentro de tu presupuesto de Diversión/Libre de este mes.'
+      : `Para ${MESES[targetDate.getMonth()]} deberías tenerlo cubierto si mantienes tu ritmo actual.`;
+  } else if(proj.amount <= acumulado*1.3){
+    level = 'warn';
+    headline = 'Está justo: te alcanza pero con poco margen. Considera esperar un poco más o recortar Diversión mientras tanto.';
+  } else {
+    level = 'danger';
+    headline = 'Todavía no. A tu ritmo actual te faltaría dinero para esto sin tocar tu ahorro o tu deuda.';
+  }
+
+  return { level, headline, acumulado, ahorroGap, deudaConInteres, monthsAhead, remainingThisMonthDiv };
+}
+
+function evalBadge(level){
+  if(level==='ok') return ['✓ Sí, adelante', 'var(--ok)', 'rgba(79,168,124,.14)'];
+  if(level==='warn') return ['⚠ Con cuidado', 'var(--warn)', 'rgba(227,169,77,.14)'];
+  return ['✗ Mejor espera', 'var(--danger)', 'rgba(221,91,79,.14)'];
+}
+
+/* ---------- contexto financiero para el bot ---------- */
+function buildFinancialContext(){
+  const cfg = state.config;
+  const ahorroM = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
+  const estiloM = cfg.ingresoFijo*(cfg.allocPct.estiloVida/100);
+  const divM = cfg.ingresoFijo*(cfg.allocPct.diversion/100);
+  const ahorroSaved = sum(monthEntries(null,'ahorro'));
+  const estiloSpent = sum(cfg.fixedExpenses.map(c=>({amount: sum(monthEntries(c.id,'gasto'))})));
+  const divSpent = sum(monthEntries('diversion','gasto'));
+  const debt = cfg.debt || { cards: [] };
+
+  return {
+    fecha: todayISO(),
+    ingresoFijoMensual: cfg.ingresoFijo,
+    apoyoVariableMensual: cfg.apoyoVariable,
+    distribucionPct: cfg.allocPct,
+    metasDelMes: { ahorro: ahorroM, estiloVida: estiloM, diversion: divM },
+    gastadoEsteMes: { ahorro: ahorroSaved, estiloVida: estiloSpent, diversion: divSpent },
+    gastosFijos: cfg.fixedExpenses.map(c=>({ nombre:c.name, presupuestoMensual:c.monthly, gastadoEsteMes: sum(monthEntries(c.id,'gasto')) })),
+    deudas: debt.cards.map(c=>({ nombre:c.name, saldo:c.saldo, tasaMensualPct:c.tasaMensual, abonoMensualComprometido:c.abonoMensual })),
+    proyeccionesPendientes: state.proyecciones.map(p=>({ descripcion:p.desc||catName(p.category), monto:p.amount, mesObjetivo:p.targetMonth })),
+  };
+}
+
+/* ---------- render ---------- */
+function render(){
+  const app = document.getElementById('app');
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.tab));
+  const now = new Date();
+  const header = `
+    <header>
+      <div class="brand">PANEL <span>/ control diario</span></div>
+      <div class="date">${DIAS[now.getDay()]} ${now.getDate()} de ${MESES[now.getMonth()]}</div>
+    </header>`;
+
+  let body = '';
+  if(state.tab==='hoy') body = renderHoy();
+  else if(state.tab==='registrar') body = renderRegistrar();
+  else if(state.tab==='proyectar') body = renderProyectar();
+  else if(state.tab==='historial') body = renderHistorial();
+  else if(state.tab==='ajustes') body = renderAjustes();
+
+  app.innerHTML = header + body;
+  attachHandlers();
+}
+
+function arcGauge(pct, colorVar){
+  pct = Math.max(0, Math.min(pct, 1.15));
+  const r = 40, c = 2*Math.PI*r*0.75; // 270deg arc
+  const dash = Math.min(pct,1) * c;
+  return `
+  <svg viewBox="0 0 100 76" >
+    <path d="M 20 66 A 40 40 0 1 1 80 66" fill="none" stroke="var(--stroke)" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 20 66 A 40 40 0 1 1 80 66" fill="none" stroke="${colorVar}" stroke-width="8" stroke-linecap="round"
+      stroke-dasharray="${dash} ${c}"/>
+  </svg>`;
+}
+
+function pctColorVar(pct){
+  if(pct >= 1) return 'var(--danger)';
+  if(pct >= 0.8) return 'var(--warn)';
+  return 'var(--ok)';
+}
+function pctClass(pct){
+  if(pct>=1) return 'danger';
+  if(pct>=0.8) return 'warn';
+  return 'ok';
+}
+
+function renderHoy(){
+  const cfg = state.config;
+  const now = new Date();
+  const dim = daysInMonth(now);
+  const dayFrac = now.getDate()/dim;
+
+  const ahorroM = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
+  const estiloM = cfg.ingresoFijo*(cfg.allocPct.estiloVida/100);
+  const divM = cfg.ingresoFijo*(cfg.allocPct.diversion/100);
+
+  const ahorroSaved = sum(monthEntries(null,'ahorro'));
+  const estiloSpent = sum(cfg.fixedExpenses.map(c=>({amount: sum(monthEntries(c.id,'gasto'))})));
+  const divSpent = sum(monthEntries('diversion','gasto'));
+
+  const alerts = computeAlerts();
+  const alertsHtml = alerts.length
+    ? alerts.map(a=>`<div class="alert ${a.level}"><div class="dot"></div><div>${a.text}</div></div>`).join('')
+    : `<div class="alert-empty">Sin alertas por ahora — vas dentro de lo planeado. ✓</div>`;
+
+  const dials = `
+    <div class="dials">
+      <div class="dial">
+        ${arcGauge(ahorroM? ahorroSaved/ahorroM:0, pctColorVar(ahorroM? ahorroSaved/ahorroM:0))}
+        <div class="label">Ahorro</div>
+        <div class="amt num">${fmt(ahorroSaved)} <span class="of">/ ${fmt(ahorroM)}</span></div>
+      </div>
+      <div class="dial">
+        ${arcGauge(estiloM? estiloSpent/estiloM:0, pctColorVar(estiloM? estiloSpent/estiloM:0))}
+        <div class="label">Estilo de vida</div>
+        <div class="amt num">${fmt(estiloSpent)} <span class="of">/ ${fmt(estiloM)}</span></div>
+      </div>
+      <div class="dial">
+        ${arcGauge(divM? divSpent/divM:0, pctColorVar(divM? divSpent/divM:0))}
+        <div class="label">Diversión</div>
+        <div class="amt num">${fmt(divSpent)} <span class="of">/ ${fmt(divM)}</span></div>
+      </div>
+    </div>`;
+
+  const divWeekly = divM/4.33;
+  const divSpentWeek = sum(weekEntries('diversion','gasto'));
+  const weekPct = divWeekly? divSpentWeek/divWeekly : 0;
+
+  const fixedRows = cfg.fixedExpenses.map(c=>{
+    const spent = sum(monthEntries(c.id,'gasto'));
+    const pct = c.monthly? spent/c.monthly : 0;
+    const pacePctPos = Math.min(dayFrac,1)*100;
+    return `
+      <div class="fuelrow">
+        <div class="top">
+          <div class="name">${c.icon} ${escapeHtml(c.name)}</div>
+          <div class="figs"><b class="num">${fmt(spent)}</b> / ${fmt(c.monthly)}</div>
+        </div>
+        <div class="track">
+          <div class="fill ${pctClass(pct)}" style="width:${Math.min(pct*100,100)}%"></div>
+          <div class="pace-tick" style="left:${pacePctPos}%" title="ritmo esperado del mes"></div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <h2>Alertas</h2>
+      ${alertsHtml}
+    </div>
+    <div class="card">
+      <h2>Distribución del mes (${fmt(cfg.ingresoFijo)} fijos)</h2>
+      ${dials}
+    </div>
+    <div class="card">
+      <h2>Diversión / Libre — esta semana</h2>
+      <div class="fuelrow" style="margin-bottom:0">
+        <div class="top">
+          <div class="name">🎈 Tope semanal</div>
+          <div class="figs"><b class="num">${fmt(divSpentWeek)}</b> / ${fmt(Math.round(divWeekly))}</div>
+        </div>
+        <div class="track"><div class="fill ${pctClass(weekPct)}" style="width:${Math.min(weekPct*100,100)}%"></div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Gastos fijos — ritmo del mes</h2>
+      ${fixedRows}
+      <div style="font-size:10px;color:var(--muted);margin-top:10px;">La línea vertical marca cuánto deberías llevar gastado según el día del mes.</div>
+    </div>
+  `;
+}
+
+function renderRegistrar(){
+  const d = state.entryDraft;
+  const showCategory = d.type==='gasto';
+
+  return `
+    <div class="card">
+      <h2>Nuevo movimiento</h2>
+      <div class="seg" id="type-seg">
+        <button data-type="gasto" class="${d.type==='gasto'?'active':''}">Gasto</button>
+        <button data-type="ingreso" class="${d.type==='ingreso'?'active':''}">Ingreso</button>
+        <button data-type="ahorro" class="${d.type==='ahorro'?'active':''}">Ahorro</button>
+      </div>
+
+      <label>Fecha</label>
+      <input type="date" id="f-date" value="${d.date}">
+
+      ${showCategory? `
+      <label>Categoría</label>
+      <select id="f-cat">${categoryOptionsHtml(d.category)}</select>` : ''}
+
+      <label>Monto (MXN)</label>
+      <input type="number" inputmode="decimal" id="f-amount" placeholder="0" value="${d.amount}">
+
+      <label>Nota (opcional)</label>
+      <input type="text" id="f-note" placeholder="ej. Costco gas" value="${escapeHtml(d.note||'')}">
+
+      <button class="btn-primary" id="save-entry">Guardar</button>
+    </div>
+  `;
+}
+
+function renderProyectar(){
+  const cfg = state.config;
+  const d = state.projDraft;
+  const list = [...state.proyecciones].sort((a,b)=> a.targetMonth.localeCompare(b.targetMonth));
+
+  const listHtml = list.length ? list.map(p=>{
+    const ev = evaluateProjection(cfg, p);
+    const [label, color, bg] = evalBadge(ev.level);
+    const detailBits = [`Colchón estimado disponible: <b class="num">${fmt(Math.max(0,ev.acumulado))}</b>`];
+    if(ev.deudaConInteres.length) detailBits.push('tienes deuda con interés activa');
+    if(ev.ahorroGap>0) detailBits.push('vas atrasado en tu meta de ahorro del mes');
+    return `
+    <div class="proj-item">
+      <div class="proj-top">
+        <div>
+          <div class="proj-desc">${escapeHtml(p.desc) || escapeHtml(catName(p.category))}</div>
+          <div class="meta" style="font-size:11px;color:var(--muted);margin-top:2px;">${p.targetMonth} · ${escapeHtml(catName(p.category))}</div>
+        </div>
+        <div class="amt num">${fmt(p.amount)}</div>
+      </div>
+      <div class="proj-badge" style="color:${color};border-color:${color};background:${bg};">${label}</div>
+      <div class="proj-explain">${ev.headline}</div>
+      <div class="proj-detail">${detailBits.join(' · ')}</div>
+      <div class="proj-actions">
+        <button class="btn-ghost" data-proj-done="${p.id}">✓ Ya lo gasté</button>
+        <button class="btn-ghost" data-proj-del="${p.id}" style="color:var(--danger);">Eliminar</button>
+      </div>
+    </div>`;
+  }).join('') : `<div class="empty-state">Todavía no tienes gastos futuros planeados.</div>`;
+
+  return `
+    <div class="card">
+      <h2>Planear un gasto futuro</h2>
+      <label>¿Qué quieres comprar / hacer?</label>
+      <input type="text" id="p-desc" placeholder="ej. Viaje a Puerto Vallarta" value="${escapeHtml(d.desc||'')}">
+      <label>Categoría</label>
+      <select id="p-cat">${categoryOptionsHtml(d.category)}</select>
+      <label>Monto (MXN)</label>
+      <input type="number" inputmode="decimal" id="p-amount" placeholder="0" value="${d.amount}">
+      <label>¿Para cuándo?</label>
+      <input type="month" id="p-month" value="${d.targetMonth}">
+      <button class="btn-primary" id="save-proj">Evaluar y guardar</button>
+    </div>
+    <div class="card">
+      <h2>Tus proyecciones</h2>
+      ${listHtml}
+    </div>
+    <div class="card">
+      <h2>Pregúntale a Claude</h2>
+      <div class="setup-note">Le mando tu contexto financiero actual (ingresos, gastos fijos, deuda, ahorro del mes y tus proyecciones) junto con tu pregunta. No lo verás escrito, solo la respuesta.</div>
+      <div class="chat-thread" id="bot-thread">${renderChatThread()}</div>
+      <label>Tu pregunta</label>
+      <input type="text" id="bot-question" placeholder="¿Es buena idea gastar $3,000 en...?">
+      <button class="btn-primary" id="bot-ask" ${state.chat.loading?'disabled':''}>${state.chat.loading? 'Pensando…' : 'Preguntar'}</button>
+    </div>
+  `;
+}
+
+function renderChatThread(){
+  if(!state.chat.messages.length){
+    return `<div class="empty-state" style="padding:10px 0;">Aún no le has preguntado nada.</div>`;
+  }
+  return state.chat.messages.map(m=> `
+    <div class="chat-msg ${m.role}">
+      <div class="chat-role">${m.role==='user' ? 'Tú' : 'Claude'}</div>
+      <div class="chat-text ${m.error?'error':''}">${escapeHtml(m.text)}</div>
+    </div>`).join('');
+}
+
+function toCSV(){
+  const rows = [['fecha','tipo','categoria','monto','nota']];
+  [...state.entries].sort((a,b)=> a.date.localeCompare(b.date)).forEach(e=>{
+    rows.push([e.date, e.type, e.type==='gasto'? catName(e.category):'', e.amount, (e.note||'').replace(/,/g,';')]);
+  });
+  return rows.map(r=>r.join(',')).join('\n');
+}
+
+function renderHistorial(){
+  const sorted = [...state.entries].sort((a,b)=> b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
+  const exportBox = state.showExport ? `
+    <div class="card">
+      <h2>Exportar para actualizar el Excel</h2>
+      <div class="setup-note">Selecciona todo el texto (toca y mantén presionado → Seleccionar todo) y pégalo en el chat con Claude para que actualice tu Excel del semestre.</div>
+      <textarea readonly id="csv-box" style="width:100%;height:160px;background:var(--panel-alt);color:var(--text);border:1px solid var(--stroke);border-radius:10px;padding:10px;font-family:'Space Mono',monospace;font-size:11px;">${toCSV()}</textarea>
+    </div>` : '';
+
+  if(sorted.length===0){
+    return `<div class="card"><div class="empty-state">Todavía no registras movimientos.<br>Ve a la pestaña Registrar para capturar el primero.</div></div>`;
+  }
+  const items = sorted.map(e=>{
+    const sign = e.type==='gasto' ? '−' : '+';
+    return `
+    <div class="hist-item">
+      <div>
+        <div>${escapeHtml(e.note) || escapeHtml(catName(e.category)) || (e.type==='ingreso'?'Ingreso':'Ahorro')}</div>
+        <div class="meta">${e.date}${e.type==='gasto' ? ' · '+escapeHtml(catName(e.category)) : ''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <div class="amt ${e.type}">${sign}${fmt(e.amount)}</div>
+        <button data-del="${e.id}">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <h2>Historial</h2>
+      ${items}
+      <button class="btn-ghost" id="btn-export">${state.showExport? 'Ocultar exportación' : 'Exportar CSV para el Excel'}</button>
+    </div>
+    ${exportBox}`;
+}
+
+function renderAjustes(){
+  const cfg = state.config;
+  const rows = cfg.fixedExpenses.map((c,i)=>`
+    <div class="fixed-row">
+      <input data-fx-name="${i}" value="${escapeHtml(c.name)}">
+      <input data-fx-amt="${i}" type="number" value="${c.monthly}">
+      <button data-fx-del="${i}">✕</button>
+    </div>`).join('');
+
+  const debt = cfg.debt || { cards: [] };
+  const debtRows = debt.cards.map((c,i)=>`
+    <div class="fixed-row debt-row">
+      <input data-debt-name="${i}" value="${escapeHtml(c.name)}" placeholder="Nombre">
+      <input data-debt-saldo="${i}" type="number" value="${c.saldo}" placeholder="Saldo">
+      <input data-debt-tasa="${i}" type="number" step="0.1" value="${c.tasaMensual}" placeholder="Tasa % mensual">
+      <input data-debt-abono="${i}" type="number" value="${c.abonoMensual}" placeholder="Abono mensual">
+      <button data-debt-del="${i}">✕</button>
+    </div>`).join('');
+
+  return `
+    <div class="card">
+      <h2>Ingresos</h2>
+      <div class="split">
+        <div><label>Fijo mensual</label><input type="number" id="a-ingreso" value="${cfg.ingresoFijo}"></div>
+        <div><label>Apoyo variable</label><input type="number" id="a-apoyo" value="${cfg.apoyoVariable}"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Distribución (% del ingreso fijo)</h2>
+      <div class="split">
+        <div><label>Ahorro</label><input type="number" id="a-ahorro" value="${cfg.allocPct.ahorro}"></div>
+        <div><label>Estilo de vida</label><input type="number" id="a-estilo" value="${cfg.allocPct.estiloVida}"></div>
+        <div><label>Diversión</label><input type="number" id="a-div" value="${cfg.allocPct.diversion}"></div>
+      </div>
+      <div class="setup-note" id="pct-warn"></div>
+    </div>
+    <div class="card">
+      <h2>Gastos fijos (Estilo de vida)</h2>
+      <div class="small-label">Nombre · Presupuesto mensual</div>
+      <div id="fx-rows">${rows}</div>
+      <button class="btn-ghost" id="fx-add">+ Agregar gasto fijo</button>
+      <div class="divider"></div>
+      <button class="btn-primary" id="save-ajustes">Guardar cambios</button>
+    </div>
+    <div class="card">
+      <h2>Deudas / Tarjetas</h2>
+      <div class="small-label">Nombre · Saldo · Tasa mensual % · Abono mensual comprometido</div>
+      <div id="debt-rows">${debtRows}</div>
+      <button class="btn-ghost" id="debt-add">+ Agregar tarjeta / deuda</button>
+      <div class="setup-note" style="margin-top:10px;">Proyecciones y el bot usan esto para saber si tienes deuda generando interés antes de recomendarte un gasto nuevo. Actualiza los saldos cuando te llegue cada estado de cuenta.</div>
+    </div>
+    <div class="card">
+      <h2>Bot (Pregúntale a Claude)</h2>
+      <label>Código de acceso (opcional)</label>
+      <input type="text" id="a-access-code" value="${escapeHtml(state.accessCode)}" placeholder="Solo si configuraste APP_ACCESS_CODE en Netlify">
+      <div class="setup-note" style="margin-top:8px;margin-bottom:0;">Déjalo vacío a menos que hayas configurado la variable de entorno APP_ACCESS_CODE en tu sitio de Netlify como candado extra para el bot.</div>
+    </div>
+    <div class="card">
+      <h2>Respaldo</h2>
+      <div class="setup-note">Tus datos viven solo en este navegador. Si cambias de teléfono o borras datos del navegador, se pierden — descarga un respaldo de vez en cuando.</div>
+      <button class="btn-ghost" id="btn-backup">Descargar respaldo (.json)</button>
+      <label style="margin-top:10px;">Restaurar desde un respaldo</label>
+      <input type="file" id="btn-restore" accept="application/json">
+    </div>
+  `;
+}
+
+/* ---------- handlers ---------- */
+function attachHandlers(){
+  document.querySelectorAll('#tabs button').forEach(b=>{
+    b.onclick = ()=>{ state.tab = b.dataset.tab; render(); };
+  });
+
+  if(state.tab==='registrar'){
+    document.querySelectorAll('#type-seg button').forEach(b=>{
+      b.onclick = ()=>{ state.entryDraft.type = b.dataset.type; render(); };
+    });
+    document.getElementById('save-entry').onclick = async ()=>{
+      const amt = parseFloat(document.getElementById('f-amount').value);
+      if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
+      const date = document.getElementById('f-date').value || todayISO();
+      const note = document.getElementById('f-note').value;
+      const type = state.entryDraft.type;
+      const category = type==='gasto' ? document.getElementById('f-cat').value : null;
+      state.entries.push({ id: uid(), type, category, amount: amt, note, date });
+      await saveEntries();
+      state.entryDraft = { type:'gasto', category:null, amount:'', note:'', date: todayISO() };
+      showToast('Guardado ✓');
+      state.tab = 'hoy';
+      render();
+    };
+  }
+
+  if(state.tab==='proyectar'){
+    document.getElementById('save-proj').onclick = async ()=>{
+      const desc = document.getElementById('p-desc').value.trim();
+      const amt = parseFloat(document.getElementById('p-amount').value);
+      const cat = document.getElementById('p-cat').value;
+      const month = document.getElementById('p-month').value;
+      if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
+      if(!month){ showToast('Elige un mes'); return; }
+      state.proyecciones.push({ id: uid(), desc, amount: amt, category: cat, targetMonth: month, createdAt: todayISO() });
+      await saveProyecciones();
+      state.projDraft = { desc:'', amount:'', category: cat, targetMonth: month };
+      showToast('Proyección guardada ✓');
+      render();
+    };
+    document.querySelectorAll('[data-proj-del]').forEach(b=>{
+      b.onclick = async ()=>{
+        state.proyecciones = state.proyecciones.filter(p=>p.id!==b.dataset.projDel);
+        await saveProyecciones();
+        render();
+      };
+    });
+    document.querySelectorAll('[data-proj-done]').forEach(b=>{
+      b.onclick = async ()=>{
+        const p = state.proyecciones.find(x=>x.id===b.dataset.projDone);
+        if(p){
+          state.entries.push({ id: uid(), type:'gasto', category: p.category, amount: p.amount, note: p.desc, date: todayISO() });
+          await saveEntries();
+          state.proyecciones = state.proyecciones.filter(x=>x.id!==p.id);
+          await saveProyecciones();
+          showToast('Registrado como gasto ✓');
+        }
+        render();
+      };
+    });
+
+    const askBtn = document.getElementById('bot-ask');
+    const questionInput = document.getElementById('bot-question');
+    const askBot = async ()=>{
+      const q = questionInput.value.trim();
+      if(!q || state.chat.loading) return;
+      state.chat.messages.push({ role:'user', text:q });
+      state.chat.loading = true;
+      render();
+      document.getElementById('bot-question').focus();
+      try{
+        const headers = { 'content-type':'application/json' };
+        if(state.accessCode) headers['x-app-code'] = state.accessCode;
+        const resp = await fetch('/.netlify/functions/ask-bot', {
+          method:'POST',
+          headers,
+          body: JSON.stringify({ context: buildFinancialContext(), question: q })
+        });
+        const data = await resp.json().catch(()=>({}));
+        if(!resp.ok) throw new Error(data.error || 'No se pudo obtener respuesta.');
+        state.chat.messages.push({ role:'bot', text: data.answer || '(sin respuesta)' });
+      }catch(e){
+        state.chat.messages.push({ role:'bot', text: '⚠️ ' + (e.message || 'No pude conectar con el asistente.'), error:true });
+      }
+      state.chat.loading = false;
+      render();
+    };
+    askBtn.onclick = askBot;
+    questionInput.onkeydown = (e)=>{ if(e.key==='Enter') askBot(); };
+  }
+
+  if(state.tab==='historial'){
+    document.querySelectorAll('[data-del]').forEach(b=>{
+      b.onclick = async ()=>{
+        state.entries = state.entries.filter(e=>e.id!==b.dataset.del);
+        await saveEntries();
+        render();
+      };
+    });
+    const expBtn = document.getElementById('btn-export');
+    if(expBtn) expBtn.onclick = ()=>{ state.showExport = !state.showExport; render(); };
+    const csvBox = document.getElementById('csv-box');
+    if(csvBox) csvBox.onclick = ()=> csvBox.select();
+  }
+
+  if(state.tab==='ajustes'){
+    const warnEl = document.getElementById('pct-warn');
+    function checkPct(){
+      const a = parseFloat(document.getElementById('a-ahorro').value)||0;
+      const e = parseFloat(document.getElementById('a-estilo').value)||0;
+      const d = parseFloat(document.getElementById('a-div').value)||0;
+      const t = a+e+d;
+      warnEl.textContent = t===100 ? `Suman ${t}% ✓` : `Ojo: tus porcentajes suman ${t}%, no 100%.`;
+      warnEl.style.color = t===100 ? 'var(--ok)' : 'var(--warn)';
+    }
+    ['a-ahorro','a-estilo','a-div'].forEach(id=> document.getElementById(id).oninput = checkPct);
+    checkPct();
+
+    document.getElementById('fx-add').onclick = ()=>{
+      state.config.fixedExpenses.push({id:'fx'+uid(), name:'Nuevo gasto', icon:'💳', monthly:0});
+      render();
+      state.tab='ajustes';
+    };
+    document.querySelectorAll('[data-fx-del]').forEach(b=>{
+      b.onclick = ()=>{
+        state.config.fixedExpenses.splice(parseInt(b.dataset.fxDel),1);
+        render(); state.tab='ajustes';
+      };
+    });
+
+    document.getElementById('debt-add').onclick = ()=>{
+      if(!state.config.debt) state.config.debt = { cards: [] };
+      state.config.debt.cards.push({ id:'debt'+uid(), name:'Nueva tarjeta', saldo:0, tasaMensual:0, abonoMensual:0 });
+      render();
+      state.tab='ajustes';
+    };
+    document.querySelectorAll('[data-debt-del]').forEach(b=>{
+      b.onclick = ()=>{
+        state.config.debt.cards.splice(parseInt(b.dataset.debtDel),1);
+        render(); state.tab='ajustes';
+      };
+    });
+
+    document.getElementById('save-ajustes').onclick = async ()=>{
+      state.config.ingresoFijo = parseFloat(document.getElementById('a-ingreso').value)||0;
+      state.config.apoyoVariable = parseFloat(document.getElementById('a-apoyo').value)||0;
+      state.config.allocPct = {
+        ahorro: parseFloat(document.getElementById('a-ahorro').value)||0,
+        estiloVida: parseFloat(document.getElementById('a-estilo').value)||0,
+        diversion: parseFloat(document.getElementById('a-div').value)||0,
+      };
+      document.querySelectorAll('#fx-rows .fixed-row').forEach((row,i)=>{
+        const nameInp = row.querySelector(`[data-fx-name="${i}"]`);
+        const amtInp = row.querySelector(`[data-fx-amt="${i}"]`);
+        if(nameInp) state.config.fixedExpenses[i].name = nameInp.value;
+        if(amtInp) state.config.fixedExpenses[i].monthly = parseFloat(amtInp.value)||0;
+      });
+      document.querySelectorAll('#debt-rows .debt-row').forEach((row,i)=>{
+        const nameInp = row.querySelector(`[data-debt-name="${i}"]`);
+        const saldoInp = row.querySelector(`[data-debt-saldo="${i}"]`);
+        const tasaInp = row.querySelector(`[data-debt-tasa="${i}"]`);
+        const abonoInp = row.querySelector(`[data-debt-abono="${i}"]`);
+        if(nameInp) state.config.debt.cards[i].name = nameInp.value;
+        if(saldoInp) state.config.debt.cards[i].saldo = parseFloat(saldoInp.value)||0;
+        if(tasaInp) state.config.debt.cards[i].tasaMensual = parseFloat(tasaInp.value)||0;
+        if(abonoInp) state.config.debt.cards[i].abonoMensual = parseFloat(abonoInp.value)||0;
+      });
+      await saveConfig();
+
+      const code = document.getElementById('a-access-code').value.trim();
+      state.accessCode = code;
+      try{ localStorage.setItem('panel_access_code', code); }catch(e){}
+
+      showToast('Ajustes guardados ✓');
+      render();
+    };
+
+    document.getElementById('btn-backup').onclick = ()=>{
+      const data = JSON.stringify({ config: state.config, entries: state.entries, proyecciones: state.proyecciones }, null, 2);
+      const blob = new Blob([data], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'panel-respaldo-'+todayISO()+'.json';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Respaldo descargado ✓');
+    };
+    document.getElementById('btn-restore').onchange = (ev)=>{
+      const file = ev.target.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = async ()=>{
+        try{
+          const data = JSON.parse(reader.result);
+          if(data.config) state.config = data.config;
+          if(data.entries) state.entries = data.entries;
+          if(data.proyecciones) state.proyecciones = data.proyecciones;
+          await saveConfig(); await saveEntries(); await saveProyecciones();
+          showToast('Respaldo restaurado ✓');
+          render();
+        }catch(e){ showToast('Ese archivo no es válido'); }
+      };
+      reader.readAsText(file);
+    };
+  }
+}
+
+loadAll();
+</script>
+</body>
+</html>

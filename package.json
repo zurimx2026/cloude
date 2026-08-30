@@ -1,0 +1,9 @@
+{
+  "name": "panel-financiero",
+  "private": true,
+  "version": "1.0.0",
+  "description": "App de finanzas personales con módulo de proyecciones y bot integrado con Claude.",
+  "engines": {
+    "node": ">=18"
+  }
+}
