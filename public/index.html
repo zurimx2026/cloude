@@ -198,7 +198,7 @@
 <div class="wrap" id="app"></div>
 <div class="toast" id="toast"></div>
 
-<nav class="tabs" id="tabs">
+<nav class="tabs" id="tabs" style="display:none;">
   <button data-tab="hoy" class="active">Hoy</button>
   <button data-tab="registrar">Registrar</button>
   <button data-tab="proyectar">Proyectar</button>
@@ -206,7 +206,13 @@
   <button data-tab="ajustes">Ajustes</button>
 </nav>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
 <script>
+const supa = (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.supabase)
+  ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY)
+  : null;
+
 const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 
@@ -234,6 +240,12 @@ const DEFAULT_CONFIG = {
 };
 
 let state = {
+  session: null,
+  authView: 'signin',
+  authEmail: '',
+  authError: '',
+  authBusy: false,
+  localImport: null,
   config: null,
   entries: [],
   proyecciones: [],
@@ -261,35 +273,160 @@ function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-async function loadAll(){
-  try{
-    const c = localStorage.getItem('panel_config');
-    state.config = c ? JSON.parse(c) : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
-  }catch(e){ state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
-  if(!state.config.debt) state.config.debt = { cards: [] };
-  if(typeof state.config.apoyoVariable !== 'number') state.config.apoyoVariable = 0;
-  try{
-    const e = localStorage.getItem('panel_entries');
-    state.entries = e ? JSON.parse(e) : [];
-  }catch(e){ state.entries = []; }
-  try{
-    const p = localStorage.getItem('panel_proyecciones');
-    state.proyecciones = p ? JSON.parse(p) : [];
-  }catch(e){ state.proyecciones = []; }
+/* ---------- arranque + sesión (Supabase Auth) ---------- */
+async function boot(){
   try{
     state.accessCode = localStorage.getItem('panel_access_code') || '';
   }catch(e){ state.accessCode = ''; }
+
+  if(!supa){
+    document.getElementById('app').innerHTML = renderMissingConfig();
+    return;
+  }
+
+  const { data } = await supa.auth.getSession();
+  state.session = data.session;
+
+  supa.auth.onAuthStateChange((_event, session)=>{
+    const hadSession = !!state.session;
+    state.session = session;
+    if(session && !hadSession) initUserData();
+    if(!session){ state.config=null; state.entries=[]; state.proyecciones=[]; state.tab='hoy'; render(); }
+  });
+
+  if(state.session){ await initUserData(); }
+  else { render(); }
+}
+
+function renderMissingConfig(){
+  return `
+    <div class="wrap" style="padding-top:60px;">
+      <div class="card">
+        <h2>Falta configurar Supabase</h2>
+        <div class="setup-note" style="margin-bottom:0;">
+          Copia <code>public/config.example.js</code> a <code>public/config.js</code> y pon la URL y
+          la anon key de tu proyecto de Supabase (Project Settings → API). Sin eso la app no tiene
+          dónde guardar tus datos. Revisa el README para los pasos completos.
+        </div>
+      </div>
+    </div>`;
+}
+
+async function initUserData(){
+  document.getElementById('app').innerHTML = `<div class="empty-state" style="padding-top:60px;">Cargando tu información…</div>`;
+  const userId = state.session.user.id;
+  try{
+    await Promise.all([
+      loadConfigFromSupabase(userId),
+      loadEntriesFromSupabase(userId),
+      loadProyeccionesFromSupabase(userId),
+    ]);
+  }catch(e){
+    document.getElementById('app').innerHTML = `<div class="wrap" style="padding-top:60px;"><div class="card"><div class="empty-state">No se pudo cargar tu información. Revisa tu conexión y recarga la página.</div></div></div>`;
+    return;
+  }
+  maybeOfferLocalImport();
+  state.tab = 'hoy';
   render();
 }
+
+async function loadConfigFromSupabase(userId){
+  const [{ data: profile }, { data: fx }, { data: debts }] = await Promise.all([
+    supa.from('profiles').select('*').eq('id', userId).maybeSingle(),
+    supa.from('fixed_expenses').select('*').eq('user_id', userId).order('sort_order'),
+    supa.from('debts').select('*').eq('user_id', userId),
+  ]);
+  state.config = {
+    ingresoFijo: profile ? Number(profile.ingreso_fijo) : DEFAULT_CONFIG.ingresoFijo,
+    apoyoVariable: profile ? Number(profile.apoyo_variable) : DEFAULT_CONFIG.apoyoVariable,
+    allocPct: {
+      ahorro: profile ? Number(profile.alloc_ahorro) : DEFAULT_CONFIG.allocPct.ahorro,
+      estiloVida: profile ? Number(profile.alloc_estilo) : DEFAULT_CONFIG.allocPct.estiloVida,
+      diversion: profile ? Number(profile.alloc_diversion) : DEFAULT_CONFIG.allocPct.diversion,
+    },
+    fixedExpenses: (fx && fx.length)
+      ? fx.map(r=>({ id:r.id, name:r.name, icon:r.icon, monthly:Number(r.monthly) }))
+      : JSON.parse(JSON.stringify(DEFAULT_CONFIG.fixedExpenses)),
+    debt: {
+      cards: (debts && debts.length)
+        ? debts.map(r=>({ id:r.id, name:r.name, saldo:Number(r.saldo), tasaMensual:Number(r.tasa_mensual), abonoMensual:Number(r.abono_mensual) }))
+        : JSON.parse(JSON.stringify(DEFAULT_CONFIG.debt.cards)),
+    },
+  };
+}
+async function loadEntriesFromSupabase(userId){
+  const { data } = await supa.from('entries').select('*').eq('user_id', userId).order('date', { ascending:false });
+  state.entries = (data||[]).map(r=>({ id:r.id, type:r.type, category:r.category, amount:Number(r.amount), note:r.note||'', date:r.date }));
+}
+async function loadProyeccionesFromSupabase(userId){
+  const { data } = await supa.from('projections').select('*').eq('user_id', userId).order('target_month');
+  state.proyecciones = (data||[]).map(r=>({ id:r.id, desc:r.description||'', amount:Number(r.amount), category:r.category, targetMonth:r.target_month, createdAt:r.created_at }));
+}
+
 async function saveConfig(){
-  try{ localStorage.setItem('panel_config', JSON.stringify(state.config)); }catch(e){ showToast('No se pudo guardar'); }
+  const userId = state.session.user.id;
+  const cfg = state.config;
+  try{
+    let error;
+    ({ error } = await supa.from('profiles').upsert({
+      id: userId,
+      ingreso_fijo: cfg.ingresoFijo,
+      apoyo_variable: cfg.apoyoVariable,
+      alloc_ahorro: cfg.allocPct.ahorro,
+      alloc_estilo: cfg.allocPct.estiloVida,
+      alloc_diversion: cfg.allocPct.diversion,
+      updated_at: new Date().toISOString(),
+    }));
+    if(error) throw error;
+
+    ({ error } = await supa.from('fixed_expenses').delete().eq('user_id', userId));
+    if(error) throw error;
+    if(cfg.fixedExpenses.length){
+      ({ error } = await supa.from('fixed_expenses').insert(
+        cfg.fixedExpenses.map((c,i)=>({ id:c.id, user_id:userId, name:c.name, icon:c.icon||'💳', monthly:c.monthly, sort_order:i }))
+      ));
+      if(error) throw error;
+    }
+
+    ({ error } = await supa.from('debts').delete().eq('user_id', userId));
+    if(error) throw error;
+    if(cfg.debt.cards.length){
+      ({ error } = await supa.from('debts').insert(
+        cfg.debt.cards.map(c=>({ id:c.id, user_id:userId, name:c.name, saldo:c.saldo, tasa_mensual:c.tasaMensual, abono_mensual:c.abonoMensual }))
+      ));
+      if(error) throw error;
+    }
+  }catch(e){ showToast('No se pudo guardar en la nube'); }
 }
-async function saveEntries(){
-  try{ localStorage.setItem('panel_entries', JSON.stringify(state.entries)); }catch(e){ showToast('No se pudo guardar'); }
+
+/* ---------- importar datos viejos de localStorage a la cuenta ---------- */
+function maybeOfferLocalImport(){
+  let legacyConfig=null, legacyEntries=[], legacyProy=[];
+  try{ legacyConfig = JSON.parse(localStorage.getItem('panel_config')); }catch(e){}
+  try{ legacyEntries = JSON.parse(localStorage.getItem('panel_entries')) || []; }catch(e){}
+  try{ legacyProy = JSON.parse(localStorage.getItem('panel_proyecciones')) || []; }catch(e){}
+  const hasLegacy = legacyConfig || legacyEntries.length || legacyProy.length;
+  const isFreshAccount = state.entries.length===0 && state.proyecciones.length===0;
+  state.localImport = (hasLegacy && isFreshAccount) ? { config: legacyConfig, entries: legacyEntries, proyecciones: legacyProy } : null;
 }
-async function saveProyecciones(){
-  try{ localStorage.setItem('panel_proyecciones', JSON.stringify(state.proyecciones)); }catch(e){ showToast('No se pudo guardar'); }
+async function importLocalData(){
+  const userId = state.session.user.id;
+  const { config, entries, proyecciones } = state.localImport;
+  if(config){ state.config = config; if(!state.config.debt) state.config.debt = {cards:[]}; }
+  await saveConfig();
+  if(entries.length){
+    const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
+    if(!error) state.entries = entries;
+  }
+  if(proyecciones.length){
+    const { error } = await supa.from('projections').upsert(proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));
+    if(!error) state.proyecciones = proyecciones;
+  }
+  state.localImport = null;
+  showToast('Datos importados ✓');
+  render();
 }
+
 function showToast(msg){
   const t = document.getElementById('toast');
   t.textContent = msg; t.classList.add('show');
@@ -468,6 +605,16 @@ function buildFinancialContext(){
 /* ---------- render ---------- */
 function render(){
   const app = document.getElementById('app');
+  const tabsNav = document.getElementById('tabs');
+
+  if(!state.session){
+    tabsNav.style.display = 'none';
+    app.innerHTML = renderAuth();
+    attachAuthHandlers();
+    return;
+  }
+  tabsNav.style.display = 'flex';
+
   document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===state.tab));
   const now = new Date();
   const header = `
@@ -476,6 +623,14 @@ function render(){
       <div class="date">${DIAS[now.getDay()]} ${now.getDate()} de ${MESES[now.getMonth()]}</div>
     </header>`;
 
+  const importBanner = state.localImport ? `
+    <div class="card" style="border-color:var(--accent);">
+      <h2>Datos encontrados en este navegador</h2>
+      <div class="setup-note" style="margin-bottom:10px;">Detectamos información guardada de una versión anterior de la app (localStorage). ¿Quieres importarla a tu cuenta?</div>
+      <button class="btn-primary" id="btn-import-local" style="margin-top:0;">Importar a mi cuenta</button>
+      <button class="btn-ghost" id="btn-dismiss-import">Descartar y empezar de cero</button>
+    </div>` : '';
+
   let body = '';
   if(state.tab==='hoy') body = renderHoy();
   else if(state.tab==='registrar') body = renderRegistrar();
@@ -483,9 +638,71 @@ function render(){
   else if(state.tab==='historial') body = renderHistorial();
   else if(state.tab==='ajustes') body = renderAjustes();
 
-  app.innerHTML = header + body;
+  app.innerHTML = header + importBanner + body;
   attachHandlers();
 }
+
+function renderAuth(){
+  const isSignup = state.authView==='signup';
+  return `
+    <div class="wrap" style="padding-top:60px;">
+      <header>
+        <div class="brand">PANEL <span>/ control diario</span></div>
+      </header>
+      <div class="card">
+        <h2>${isSignup ? 'Crear cuenta' : 'Iniciar sesión'}</h2>
+        ${state.authError ? `<div class="alert danger"><div class="dot"></div><div>${escapeHtml(state.authError)}</div></div>` : ''}
+        <label>Correo</label>
+        <input type="email" id="auth-email" value="${escapeHtml(state.authEmail||'')}" placeholder="tu@correo.com" autocomplete="email">
+        <label>Contraseña</label>
+        <input type="password" id="auth-password" placeholder="mínimo 6 caracteres" autocomplete="${isSignup?'new-password':'current-password'}">
+        <button class="btn-primary" id="auth-submit" ${state.authBusy?'disabled':''}>${state.authBusy ? 'Un momento…' : (isSignup ? 'Crear cuenta' : 'Entrar')}</button>
+        <button class="btn-ghost" id="auth-switch">${isSignup ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Créala'}</button>
+      </div>
+    </div>`;
+}
+
+function attachAuthHandlers(){
+  const submit = async ()=>{
+    if(state.authBusy) return;
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    state.authEmail = email;
+    if(!email || !password || password.length<6){
+      state.authError = 'Pon un correo válido y una contraseña de al menos 6 caracteres.';
+      render();
+      return;
+    }
+    state.authError = '';
+    state.authBusy = true;
+    render();
+    const { data, error } = state.authView==='signup'
+      ? await supa.auth.signUp({ email, password })
+      : await supa.auth.signInWithPassword({ email, password });
+    state.authBusy = false;
+    if(error){
+      state.authError = error.message;
+      render();
+      return;
+    }
+    if(!data.session){
+      state.authError = 'Cuenta creada. Revisa tu correo para confirmar tu cuenta y luego inicia sesión.';
+      state.authView = 'signin';
+      render();
+      return;
+    }
+    state.session = data.session;
+    await initUserData();
+  };
+  document.getElementById('auth-submit').onclick = submit;
+  document.getElementById('auth-password').onkeydown = (e)=>{ if(e.key==='Enter') submit(); };
+  document.getElementById('auth-switch').onclick = ()=>{
+    state.authView = isSignupView() ? 'signin' : 'signup';
+    state.authError = '';
+    render();
+  };
+}
+function isSignupView(){ return state.authView==='signup'; }
 
 function arcGauge(pct, colorVar){
   pct = Math.max(0, Math.min(pct, 1.15));
@@ -760,6 +977,11 @@ function renderAjustes(){
 
   return `
     <div class="card">
+      <h2>Cuenta</h2>
+      <div class="setup-note" style="margin-bottom:10px;">Conectado como <b style="color:var(--text);">${escapeHtml(state.session.user.email||'')}</b>. Tus datos se guardan en la nube y se sincronizan entre dispositivos.</div>
+      <button class="btn-ghost" id="btn-logout">Cerrar sesión</button>
+    </div>
+    <div class="card">
       <h2>Ingresos</h2>
       <div class="split">
         <div><label>Fijo mensual</label><input type="number" id="a-ingreso" value="${cfg.ingresoFijo}"></div>
@@ -798,7 +1020,7 @@ function renderAjustes(){
     </div>
     <div class="card">
       <h2>Respaldo</h2>
-      <div class="setup-note">Tus datos viven solo en este navegador. Si cambias de teléfono o borras datos del navegador, se pierden — descarga un respaldo de vez en cuando.</div>
+      <div class="setup-note">Tus datos ya viven en la nube y se sincronizan solos entre dispositivos con tu cuenta. Esto es solo una copia extra por si acaso.</div>
       <button class="btn-ghost" id="btn-backup">Descargar respaldo (.json)</button>
       <label style="margin-top:10px;">Restaurar desde un respaldo</label>
       <input type="file" id="btn-restore" accept="application/json">
@@ -812,6 +1034,11 @@ function attachHandlers(){
     b.onclick = ()=>{ state.tab = b.dataset.tab; render(); };
   });
 
+  const importBtn = document.getElementById('btn-import-local');
+  if(importBtn) importBtn.onclick = importLocalData;
+  const dismissBtn = document.getElementById('btn-dismiss-import');
+  if(dismissBtn) dismissBtn.onclick = ()=>{ state.localImport = null; render(); };
+
   if(state.tab==='registrar'){
     document.querySelectorAll('#type-seg button').forEach(b=>{
       b.onclick = ()=>{ state.entryDraft.type = b.dataset.type; render(); };
@@ -823,8 +1050,10 @@ function attachHandlers(){
       const note = document.getElementById('f-note').value;
       const type = state.entryDraft.type;
       const category = type==='gasto' ? document.getElementById('f-cat').value : null;
-      state.entries.push({ id: uid(), type, category, amount: amt, note, date });
-      await saveEntries();
+      const entry = { id: uid(), type, category, amount: amt, note, date };
+      const { error } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
+      if(error){ showToast('No se pudo guardar'); return; }
+      state.entries.push(entry);
       state.entryDraft = { type:'gasto', category:null, amount:'', note:'', date: todayISO() };
       showToast('Guardado ✓');
       state.tab = 'hoy';
@@ -840,16 +1069,22 @@ function attachHandlers(){
       const month = document.getElementById('p-month').value;
       if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
       if(!month){ showToast('Elige un mes'); return; }
-      state.proyecciones.push({ id: uid(), desc, amount: amt, category: cat, targetMonth: month, createdAt: todayISO() });
-      await saveProyecciones();
+      const proj = { id: uid(), desc, amount: amt, category: cat, targetMonth: month, createdAt: todayISO() };
+      const { error } = await supa.from('projections').insert({
+        id: proj.id, user_id: state.session.user.id, description: proj.desc,
+        amount: proj.amount, category: proj.category, target_month: proj.targetMonth,
+      });
+      if(error){ showToast('No se pudo guardar'); return; }
+      state.proyecciones.push(proj);
       state.projDraft = { desc:'', amount:'', category: cat, targetMonth: month };
       showToast('Proyección guardada ✓');
       render();
     };
     document.querySelectorAll('[data-proj-del]').forEach(b=>{
       b.onclick = async ()=>{
+        const { error } = await supa.from('projections').delete().eq('id', b.dataset.projDel);
+        if(error){ showToast('No se pudo eliminar'); return; }
         state.proyecciones = state.proyecciones.filter(p=>p.id!==b.dataset.projDel);
-        await saveProyecciones();
         render();
       };
     });
@@ -857,11 +1092,13 @@ function attachHandlers(){
       b.onclick = async ()=>{
         const p = state.proyecciones.find(x=>x.id===b.dataset.projDone);
         if(p){
-          state.entries.push({ id: uid(), type:'gasto', category: p.category, amount: p.amount, note: p.desc, date: todayISO() });
-          await saveEntries();
+          const entry = { id: uid(), type:'gasto', category: p.category, amount: p.amount, note: p.desc, date: todayISO() };
+          const { error: e1 } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
+          if(e1){ showToast('No se pudo registrar el gasto'); return; }
+          const { error: e2 } = await supa.from('projections').delete().eq('id', p.id);
+          state.entries.push(entry);
           state.proyecciones = state.proyecciones.filter(x=>x.id!==p.id);
-          await saveProyecciones();
-          showToast('Registrado como gasto ✓');
+          showToast(e2 ? 'Gasto registrado, pero no se pudo quitar la proyección' : 'Registrado como gasto ✓');
         }
         render();
       };
@@ -878,6 +1115,7 @@ function attachHandlers(){
       document.getElementById('bot-question').focus();
       try{
         const headers = { 'content-type':'application/json' };
+        if(state.session?.access_token) headers['authorization'] = 'Bearer ' + state.session.access_token;
         if(state.accessCode) headers['x-app-code'] = state.accessCode;
         const resp = await fetch('/.netlify/functions/ask-bot', {
           method:'POST',
@@ -900,8 +1138,9 @@ function attachHandlers(){
   if(state.tab==='historial'){
     document.querySelectorAll('[data-del]').forEach(b=>{
       b.onclick = async ()=>{
+        const { error } = await supa.from('entries').delete().eq('id', b.dataset.del);
+        if(error){ showToast('No se pudo eliminar'); return; }
         state.entries = state.entries.filter(e=>e.id!==b.dataset.del);
-        await saveEntries();
         render();
       };
     });
@@ -1003,17 +1242,32 @@ function attachHandlers(){
           if(data.config) state.config = data.config;
           if(data.entries) state.entries = data.entries;
           if(data.proyecciones) state.proyecciones = data.proyecciones;
-          await saveConfig(); await saveEntries(); await saveProyecciones();
+          if(!state.config.debt) state.config.debt = { cards: [] };
+          const userId = state.session.user.id;
+          await saveConfig();
+          if(state.entries.length){
+            await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
+          }
+          if(state.proyecciones.length){
+            await supa.from('projections').upsert(state.proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));
+          }
           showToast('Respaldo restaurado ✓');
           render();
         }catch(e){ showToast('Ese archivo no es válido'); }
       };
       reader.readAsText(file);
     };
+
+    document.getElementById('btn-logout').onclick = async ()=>{
+      await supa.auth.signOut();
+      state.session = null;
+      state.config = null; state.entries = []; state.proyecciones = [];
+      render();
+    };
   }
 }
 
-loadAll();
+boot();
 </script>
 </body>
 </html>

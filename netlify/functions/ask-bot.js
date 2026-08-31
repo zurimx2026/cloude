@@ -1,8 +1,29 @@
 // Puente entre la app y la API de Claude. Corre en el servidor (Netlify Functions)
 // para que la API key nunca quede expuesta en el navegador.
 
+const crypto = require('crypto');
+
 const MAX_QUESTION_LEN = 2000;
 const MAX_CONTEXT_LEN = 20000; // límite defensivo sobre el tamaño del contexto financiero recibido
+
+// Verifica un JWT HS256 emitido por Supabase Auth (firmado con el JWT secret
+// del proyecto) sin depender de ninguna librería externa.
+function verifySupabaseToken(token, secret) {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sigB64] = parts;
+  const expectedSig = crypto.createHmac('sha256', secret).update(`${headerB64}.${payloadB64}`).digest('base64url');
+  if (expectedSig !== sigB64) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch (e) {
+    return null;
+  }
+  if (typeof payload.exp === 'number' && Date.now() / 1000 > payload.exp) return null;
+  return payload;
+}
 
 exports.handler = async function (event) {
   if (event.httpMethod !== 'POST') {
@@ -17,10 +38,19 @@ exports.handler = async function (event) {
     };
   }
 
-  // Gate opcional y ligero: si el sitio define APP_ACCESS_CODE, exige que el cliente lo mande.
-  // Es una medida mínima mientras no exista login real (eso llega con el backend, más adelante).
+  // Gate principal: exige una sesión real de Supabase (login) si el sitio tiene
+  // configurado SUPABASE_JWT_SECRET (Project Settings → API → JWT Secret).
+  // Si no está configurado, cae al candado simple de APP_ACCESS_CODE como respaldo.
+  const jwtSecret = process.env.SUPABASE_JWT_SECRET;
   const requiredCode = process.env.APP_ACCESS_CODE;
-  if (requiredCode) {
+  if (jwtSecret) {
+    const authHeader = event.headers['authorization'] || event.headers['Authorization'] || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const claims = verifySupabaseToken(token, jwtSecret);
+    if (!claims || !claims.sub) {
+      return { statusCode: 401, body: JSON.stringify({ error: 'Sesión inválida o expirada. Vuelve a iniciar sesión.' }) };
+    }
+  } else if (requiredCode) {
     const provided = event.headers['x-app-code'] || event.headers['X-App-Code'];
     if (provided !== requiredCode) {
       return { statusCode: 401, body: JSON.stringify({ error: 'Código de acceso inválido.' }) };
