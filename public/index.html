@@ -55,9 +55,9 @@
   }
   nav.tabs button{
     flex:1;background:none;border:none;color:var(--muted);
-    font-family:'Manrope',sans-serif;font-weight:700;font-size:10.5px;
-    letter-spacing:.02em;text-transform:uppercase;
-    padding:8px 2px;border-radius:10px;cursor:pointer;
+    font-family:'Manrope',sans-serif;font-weight:700;font-size:9.5px;
+    letter-spacing:0;text-transform:uppercase;
+    padding:7px 1px;border-radius:10px;cursor:pointer;
   }
   nav.tabs button.active{color:var(--bg);background:var(--accent);}
 
@@ -164,8 +164,6 @@
   .fixed-row input:nth-of-type(1){flex:1.4;}
   .fixed-row input:nth-of-type(2){flex:1;}
   .fixed-row button{background:none;border:none;color:var(--danger);font-size:18px;cursor:pointer;flex:none;}
-  .debt-row{flex-wrap:wrap;}
-  .debt-row input{flex:1 1 45%;min-width:100px;font-size:13px;padding:9px 8px;}
   .split{display:flex;gap:8px;}
   .split > div{flex:1;}
 
@@ -183,6 +181,18 @@
   .proj-detail{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.4;}
   .proj-actions{display:flex;gap:8px;margin-top:10px;}
   .proj-actions button{flex:1;font-size:11px;padding:9px 6px;margin-top:0;}
+
+  /* Tarjetas de crédito */
+  .card-tile{border:1px solid var(--stroke);border-radius:14px;padding:14px;margin-bottom:12px;background:var(--panel-alt);}
+  .card-tile:last-child{margin-bottom:0;}
+  .card-tile-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;}
+  .card-tile-name{font-size:15px;font-weight:800;}
+  .card-tile-last4{font-family:'Space Mono',monospace;font-weight:400;color:var(--muted);font-size:12px;}
+  .card-tile-bank{font-size:11px;color:var(--muted);margin-top:2px;}
+  .card-tile-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:var(--muted);margin-top:10px;}
+  .card-tile-pay{display:flex;gap:8px;margin-top:10px;}
+  .card-tile-pay input{flex:1;}
+  .card-tile-pay button{flex:none;margin-top:0;width:auto;white-space:nowrap;}
 
   /* Bot chat */
   .chat-thread{margin-bottom:6px;}
@@ -202,6 +212,7 @@
   <button data-tab="hoy" class="active">Hoy</button>
   <button data-tab="registrar">Registrar</button>
   <button data-tab="proyectar">Proyectar</button>
+  <button data-tab="tarjetas">Tarjetas</button>
   <button data-tab="historial">Historial</button>
   <button data-tab="ajustes">Ajustes</button>
 </nav>
@@ -230,11 +241,11 @@ const DEFAULT_CONFIG = {
     { id: 'icloud',    name: 'iCloud',         icon:'☁️', monthly: 179 },
   ],
   // Placeholder con los últimos datos conocidos (cortes de julio 2026) — actualiza el saldo
-  // real en Ajustes, ya que va bajando cada mes con los abonos.
+  // real en la pestaña Tarjetas, ya que va bajando cada mes con los abonos.
   debt: {
     cards: [
-      { id:'joy',      name:'JOY',      saldo:7809.71,  tasaMensual:5.6, abonoMensual:2000 },
-      { id:'clasica',  name:'CLÁSICA',  saldo:10034.22, tasaMensual:1.4, abonoMensual:0 },
+      { id:'joy',      name:'JOY',      bank:'', last4:'0883', saldo:7809.71,  limite:0, tasaMensual:5.6, abonoMensual:2000, pagoMinimo:0, corteDia:null, pagoDia:null },
+      { id:'clasica',  name:'CLÁSICA',  bank:'', last4:'4612', saldo:10034.22, limite:0, tasaMensual:1.4, abonoMensual:0,    pagoMinimo:0, corteDia:null, pagoDia:null },
     ]
   }
 };
@@ -249,6 +260,10 @@ let state = {
   config: null,
   entries: [],
   proyecciones: [],
+  cardPayments: [],
+  showCardForm: false,
+  cardDraft: null,
+  expandedCard: null,
   tab: 'hoy',
   showExport: false,
   entryDraft: { type:'gasto', category:null, amount:'', note:'', date: todayISO() },
@@ -272,6 +287,21 @@ function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function normalizeCard(c){
+  return {
+    id: c.id || 'debt'+uid(),
+    name: c.name || 'Tarjeta',
+    bank: c.bank || '',
+    last4: c.last4 || '',
+    saldo: Number(c.saldo)||0,
+    limite: Number(c.limite)||0,
+    tasaMensual: Number(c.tasaMensual)||0,
+    abonoMensual: Number(c.abonoMensual)||0,
+    pagoMinimo: Number(c.pagoMinimo)||0,
+    corteDia: c.corteDia ? Number(c.corteDia) : null,
+    pagoDia: c.pagoDia ? Number(c.pagoDia) : null,
+  };
+}
 
 /* ---------- arranque + sesión (Supabase Auth) ---------- */
 async function boot(){
@@ -291,7 +321,11 @@ async function boot(){
     const hadSession = !!state.session;
     state.session = session;
     if(session && !hadSession) initUserData();
-    if(!session){ state.config=null; state.entries=[]; state.proyecciones=[]; state.tab='hoy'; render(); }
+    if(!session){
+      state.config=null; state.entries=[]; state.proyecciones=[]; state.cardPayments=[];
+      state.showCardForm=false; state.cardDraft=null; state.expandedCard=null; state.tab='hoy';
+      render();
+    }
   });
 
   if(state.session){ await initUserData(); }
@@ -320,6 +354,7 @@ async function initUserData(){
       loadConfigFromSupabase(userId),
       loadEntriesFromSupabase(userId),
       loadProyeccionesFromSupabase(userId),
+      loadCardPaymentsFromSupabase(userId),
     ]);
   }catch(e){
     document.getElementById('app').innerHTML = `<div class="wrap" style="padding-top:60px;"><div class="card"><div class="empty-state">No se pudo cargar tu información. Revisa tu conexión y recarga la página.</div></div></div>`;
@@ -349,7 +384,11 @@ async function loadConfigFromSupabase(userId){
       : JSON.parse(JSON.stringify(DEFAULT_CONFIG.fixedExpenses)),
     debt: {
       cards: (debts && debts.length)
-        ? debts.map(r=>({ id:r.id, name:r.name, saldo:Number(r.saldo), tasaMensual:Number(r.tasa_mensual), abonoMensual:Number(r.abono_mensual) }))
+        ? debts.map(r=>normalizeCard({
+            id:r.id, name:r.name, bank:r.bank, last4:r.last4, saldo:r.saldo, limite:r.limite,
+            tasaMensual:r.tasa_mensual, abonoMensual:r.abono_mensual, pagoMinimo:r.pago_minimo,
+            corteDia:r.corte_dia, pagoDia:r.pago_dia,
+          }))
         : JSON.parse(JSON.stringify(DEFAULT_CONFIG.debt.cards)),
     },
   };
@@ -361,6 +400,10 @@ async function loadEntriesFromSupabase(userId){
 async function loadProyeccionesFromSupabase(userId){
   const { data } = await supa.from('projections').select('*').eq('user_id', userId).order('target_month');
   state.proyecciones = (data||[]).map(r=>({ id:r.id, desc:r.description||'', amount:Number(r.amount), category:r.category, targetMonth:r.target_month, createdAt:r.created_at }));
+}
+async function loadCardPaymentsFromSupabase(userId){
+  const { data } = await supa.from('card_payments').select('*').eq('user_id', userId).order('date', { ascending:false });
+  state.cardPayments = (data||[]).map(r=>({ id:r.id, cardId:r.card_id, amount:Number(r.amount), date:r.date, note:r.note||'' }));
 }
 
 async function saveConfig(){
@@ -392,7 +435,12 @@ async function saveConfig(){
     if(error) throw error;
     if(cfg.debt.cards.length){
       ({ error } = await supa.from('debts').insert(
-        cfg.debt.cards.map(c=>({ id:c.id, user_id:userId, name:c.name, saldo:c.saldo, tasa_mensual:c.tasaMensual, abono_mensual:c.abonoMensual }))
+        cfg.debt.cards.map(c=>({
+          id:c.id, user_id:userId, name:c.name, saldo:c.saldo,
+          tasa_mensual:c.tasaMensual, abono_mensual:c.abonoMensual,
+          bank:c.bank||null, last4:c.last4||null, limite:c.limite||0,
+          corte_dia:c.corteDia||null, pago_dia:c.pagoDia||null, pago_minimo:c.pagoMinimo||0,
+        }))
       ));
       if(error) throw error;
     }
@@ -412,7 +460,11 @@ function maybeOfferLocalImport(){
 async function importLocalData(){
   const userId = state.session.user.id;
   const { config, entries, proyecciones } = state.localImport;
-  if(config){ state.config = config; if(!state.config.debt) state.config.debt = {cards:[]}; }
+  if(config){
+    state.config = config;
+    if(!state.config.debt) state.config.debt = {cards:[]};
+    state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
+  }
   await saveConfig();
   if(entries.length){
     const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
@@ -520,6 +572,26 @@ function computeAlerts(){
     alerts.push({level:'warn', text:`Tienes ${fmt(total)} de deuda generando interés (${conInteres.map(c=>c.name).join(', ')}). Cada gasto extra compite con pagarla más rápido.`});
   }
 
+  // Tarjetas: utilización, fecha de pago próxima, abono que no alcanza a cubrir el interés
+  cards.forEach(c=>{
+    if(c.limite>0){
+      const util = c.saldo/c.limite;
+      if(util>=0.9){
+        alerts.push({level:'danger', text:`${c.name} está casi al límite: ${Math.round(util*100)}% usado (${fmt(c.saldo)} de ${fmt(c.limite)}).`});
+      } else if(util>=0.7){
+        alerts.push({level:'warn', text:`${c.name} va en ${Math.round(util*100)}% de uso de su límite — cuida no acercarte más.`});
+      }
+    }
+    const proximoPago = nextOccurrenceOfDay(c.pagoDia);
+    const dias = daysUntil(proximoPago);
+    if(dias!==null && dias<=5 && c.saldo>0){
+      alerts.push({level: dias<=1?'danger':'warn', text:`El pago de ${c.name} vence ${dias<=0?'hoy':'en '+dias+' día'+(dias===1?'':'s')} — no lo dejes pasar.`});
+    }
+    if(c.saldo>0 && c.tasaMensual>0 && c.abonoMensual>0 && c.abonoMensual <= c.saldo*(c.tasaMensual/100)){
+      alerts.push({level:'danger', text:`Tu abono a ${c.name} (${fmt(c.abonoMensual)}) no alcanza a cubrir el interés del mes — con ese abono nunca vas a bajar el saldo.`});
+    }
+  });
+
   return alerts;
 }
 
@@ -597,7 +669,23 @@ function buildFinancialContext(){
     metasDelMes: { ahorro: ahorroM, estiloVida: estiloM, diversion: divM },
     gastadoEsteMes: { ahorro: ahorroSaved, estiloVida: estiloSpent, diversion: divSpent },
     gastosFijos: cfg.fixedExpenses.map(c=>({ nombre:c.name, presupuestoMensual:c.monthly, gastadoEsteMes: sum(monthEntries(c.id,'gasto')) })),
-    deudas: debt.cards.map(c=>({ nombre:c.name, saldo:c.saldo, tasaMensualPct:c.tasaMensual, abonoMensualComprometido:c.abonoMensual })),
+    deudas: debt.cards.map(c=>{
+      const sim = simulatePayoff(c);
+      return {
+        nombre: c.name,
+        banco: c.bank || null,
+        saldo: c.saldo,
+        limiteCredito: c.limite || null,
+        utilizacionPct: c.limite>0 ? Math.round((c.saldo/c.limite)*100) : null,
+        tasaMensualPct: c.tasaMensual,
+        abonoMensualComprometido: c.abonoMensual,
+        diaCorte: c.corteDia || null,
+        diaPago: c.pagoDia || null,
+        mesesParaLiquidarConAbonoActual: sim.neverPaysOff ? null : sim.months,
+        interesTotalProyectado: sim.neverPaysOff ? null : Math.round(sim.totalInterest),
+        nuncaSeLiquidaConAbonoActual: !!sim.neverPaysOff,
+      };
+    }),
     proyeccionesPendientes: state.proyecciones.map(p=>({ descripcion:p.desc||catName(p.category), monto:p.amount, mesObjetivo:p.targetMonth })),
   };
 }
@@ -635,6 +723,7 @@ function render(){
   if(state.tab==='hoy') body = renderHoy();
   else if(state.tab==='registrar') body = renderRegistrar();
   else if(state.tab==='proyectar') body = renderProyectar();
+  else if(state.tab==='tarjetas') body = renderTarjetas();
   else if(state.tab==='historial') body = renderHistorial();
   else if(state.tab==='ajustes') body = renderAjustes();
 
@@ -725,6 +814,52 @@ function pctClass(pct){
   if(pct>=1) return 'danger';
   if(pct>=0.8) return 'warn';
   return 'ok';
+}
+
+/* ---------- tarjetas: fechas, utilización, simulación de liquidación ---------- */
+function utilClass(pct){
+  if(pct>=0.7) return 'danger';
+  if(pct>=0.3) return 'warn';
+  return 'ok';
+}
+function nextOccurrenceOfDay(day){
+  if(!day) return null;
+  const now = new Date();
+  let y=now.getFullYear(), m=now.getMonth();
+  let d = Math.min(day, daysInMonth(new Date(y,m,1)));
+  let candidate = new Date(y,m,d,23,59,59);
+  if(candidate < now){
+    m += 1;
+    if(m>11){ m=0; y+=1; }
+    d = Math.min(day, daysInMonth(new Date(y,m,1)));
+    candidate = new Date(y,m,d,23,59,59);
+  }
+  return candidate;
+}
+function daysUntil(date){
+  if(!date) return null;
+  return Math.ceil((date - new Date()) / 86400000);
+}
+function addMonths(date, n){
+  const d = new Date(date); d.setMonth(d.getMonth()+n); return d;
+}
+function simulatePayoff(card){
+  const tasa = (card.tasaMensual||0)/100;
+  let saldo = card.saldo||0;
+  const abono = card.abonoMensual||0;
+  if(saldo<=0) return { months:0, totalInterest:0, neverPaysOff:false };
+  if(abono<=0) return { months:null, totalInterest:null, neverPaysOff:true };
+  let months=0, totalInterest=0;
+  while(saldo>0.5 && months<600){
+    const interes = saldo*tasa;
+    const nuevoSaldo = saldo + interes - abono;
+    if(nuevoSaldo >= saldo - 0.005){ return { months:null, totalInterest:null, neverPaysOff:true }; }
+    totalInterest += interes;
+    saldo = Math.max(0, nuevoSaldo);
+    months++;
+  }
+  if(saldo>0.5) return { months:null, totalInterest:null, neverPaysOff:true };
+  return { months, totalInterest, neverPaysOff:false };
 }
 
 function renderHoy(){
@@ -913,6 +1048,167 @@ function renderChatThread(){
     </div>`).join('');
 }
 
+function renderTarjetas(){
+  const cfg = state.config;
+  const cards = (cfg.debt && cfg.debt.cards) || [];
+
+  const totalSaldo = sum(cards.map(c=>({amount:c.saldo})));
+  const totalAbono = sum(cards.map(c=>({amount:c.abonoMensual})));
+  const interesMensualEstimado = cards.reduce((a,c)=> a + c.saldo*(c.tasaMensual/100), 0);
+  // Solo cuenta tarjetas con límite cargado — mezclar con las que no lo tienen
+  // (límite 0) daría un % de uso inflado y sin sentido.
+  const cardsConLimite = cards.filter(c=>c.limite>0);
+  const totalLimite = sum(cardsConLimite.map(c=>({amount:c.limite})));
+  const totalSaldoConLimite = sum(cardsConLimite.map(c=>({amount:c.saldo})));
+  const utilGlobal = totalLimite>0 ? totalSaldoConLimite/totalLimite : null;
+  const prioridad = [...cards].filter(c=>c.saldo>0 && c.tasaMensual>0).sort((a,b)=>b.tasaMensual-a.tasaMensual)[0];
+
+  const summary = `
+    <div class="card">
+      <h2>Resumen de deuda</h2>
+      <div class="dials" style="grid-template-columns:repeat(3,1fr);">
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;">${fmt(totalSaldo)}</div>
+          <div class="label">Deuda total</div>
+        </div>
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;color:${interesMensualEstimado>0?'var(--danger)':'var(--text)'};">${fmt(interesMensualEstimado)}</div>
+          <div class="label">Interés / mes</div>
+        </div>
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;">${fmt(totalAbono)}</div>
+          <div class="label">Abono / mes</div>
+        </div>
+      </div>
+      ${utilGlobal!==null ? `
+      <div class="fuelrow" style="margin-top:14px;">
+        <div class="top"><div class="name">Uso de crédito${cardsConLimite.length<cards.length?' (tarjetas con límite cargado)':''}</div><div class="figs">${Math.round(utilGlobal*100)}%</div></div>
+        <div class="track"><div class="fill ${utilClass(utilGlobal)}" style="width:${Math.min(utilGlobal*100,100)}%"></div></div>
+      </div>` : ''}
+      ${prioridad ? `<div class="setup-note" style="margin:14px 0 0;">Si tienes dinero extra para meter a deudas, prioriza <b style="color:var(--text);">${escapeHtml(prioridad.name)}</b> — es la que más te cuesta cada mes (${prioridad.tasaMensual}% mensual).</div>` : ''}
+    </div>`;
+
+  const tiles = cards.length
+    ? [...cards].sort((a,b)=>b.tasaMensual-a.tasaMensual).map(c=>renderCardTile(c)).join('')
+    : `<div class="empty-state">Todavía no agregas ninguna tarjeta.</div>`;
+
+  return `
+    ${summary}
+    <div class="card">
+      <h2>Tus tarjetas</h2>
+      ${tiles}
+      ${!state.showCardForm ? `<button class="btn-ghost" id="card-add-open">+ Agregar tarjeta</button>` : ''}
+    </div>
+    ${state.showCardForm ? renderCardForm() : ''}
+  `;
+}
+
+function renderCardForm(){
+  const d = state.cardDraft;
+  return `
+    <div class="card">
+      <h2>${d.editingId ? 'Editar tarjeta' : 'Nueva tarjeta'}</h2>
+      <div class="split">
+        <div><label>Nombre</label><input type="text" id="c-name" value="${escapeHtml(d.name)}" placeholder="ej. JOY"></div>
+        <div><label>Banco (opcional)</label><input type="text" id="c-bank" value="${escapeHtml(d.bank)}" placeholder="ej. Banorte"></div>
+      </div>
+      <label>Últimos 4 dígitos (opcional)</label>
+      <input type="text" id="c-last4" inputmode="numeric" maxlength="4" value="${escapeHtml(d.last4)}" placeholder="0883">
+      <div class="split">
+        <div><label>Saldo actual</label><input type="number" id="c-saldo" value="${d.saldo}"></div>
+        <div><label>Límite de crédito</label><input type="number" id="c-limite" value="${d.limite}"></div>
+      </div>
+      <div class="split">
+        <div><label>Tasa mensual %</label><input type="number" step="0.1" id="c-tasa" value="${d.tasaMensual}"></div>
+        <div><label>Abono mensual</label><input type="number" id="c-abono" value="${d.abonoMensual}"></div>
+      </div>
+      <div class="split">
+        <div><label>Día de corte (opcional)</label><input type="number" min="1" max="31" id="c-corte" value="${d.corteDia||''}"></div>
+        <div><label>Día límite de pago (opcional)</label><input type="number" min="1" max="31" id="c-pago" value="${d.pagoDia||''}"></div>
+      </div>
+      <label>Pago mínimo (opcional)</label>
+      <input type="number" id="c-pago-minimo" value="${d.pagoMinimo}">
+      <button class="btn-primary" id="card-save">${d.editingId ? 'Guardar cambios' : 'Agregar tarjeta'}</button>
+      <button class="btn-ghost" id="card-cancel">Cancelar</button>
+    </div>`;
+}
+
+function renderCardTile(c){
+  const util = c.limite>0 ? c.saldo/c.limite : null;
+  const proximoCorte = nextOccurrenceOfDay(c.corteDia);
+  const proximoPago = nextOccurrenceOfDay(c.pagoDia);
+  const diasPago = daysUntil(proximoPago);
+  const sim = simulatePayoff(c);
+
+  let payoffText;
+  if(c.saldo<=0){
+    payoffText = 'Sin saldo pendiente ✓';
+  } else if(sim.neverPaysOff){
+    payoffText = c.abonoMensual<=0
+      ? 'No tienes un abono mensual definido para esta tarjeta.'
+      : `⚠️ Con tu abono actual (${fmt(c.abonoMensual)}/mes) nunca terminas de pagarla: el interés mensual (~${fmt(c.saldo*c.tasaMensual/100)}) es igual o mayor a tu abono.`;
+  } else {
+    const finish = addMonths(new Date(), sim.months);
+    payoffText = `A este ritmo la terminas de pagar en ${sim.months} mes${sim.months===1?'':'es'} (${MESES[finish.getMonth()]} ${finish.getFullYear()}), pagando ~${fmt(sim.totalInterest)} de interés en el camino.`;
+  }
+
+  const pagoBadge = diasPago!==null && c.saldo>0
+    ? `<span style="color:${diasPago<=5?'var(--danger)':diasPago<=10?'var(--warn)':'var(--muted)'};">Pago en ${diasPago<=0?'hoy':diasPago+'d'}</span>`
+    : '';
+  const corteBadge = proximoCorte ? `Corte: ${proximoCorte.getDate()} ${MESES[proximoCorte.getMonth()].slice(0,3)}` : '';
+
+  const isExpanded = state.expandedCard === c.id;
+  const payments = state.cardPayments.filter(p=>p.cardId===c.id).slice(0,5);
+
+  return `
+    <div class="card-tile">
+      <div class="card-tile-top">
+        <div>
+          <div class="card-tile-name">${escapeHtml(c.name)}${c.last4 ? ` <span class="card-tile-last4">•••• ${escapeHtml(c.last4)}</span>` : ''}</div>
+          ${c.bank ? `<div class="card-tile-bank">${escapeHtml(c.bank)}</div>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div class="amt num" style="font-size:16px;">${fmt(c.saldo)}</div>
+          ${c.limite>0 ? `<div class="meta" style="font-size:11px;color:var(--muted);">de ${fmt(c.limite)}</div>` : ''}
+        </div>
+      </div>
+
+      ${util!==null ? `
+        <div class="track" style="margin-top:10px;"><div class="fill ${utilClass(util)}" style="width:${Math.min(util*100,100)}%"></div></div>
+        <div class="meta" style="font-size:11px;color:var(--muted);margin-top:4px;">${Math.round(util*100)}% de uso</div>
+      ` : `<div class="setup-note" style="margin:8px 0 0;">Agrega el límite de crédito (Editar) para ver tu % de uso.</div>`}
+
+      <div class="card-tile-meta">
+        <span>Tasa: ${c.tasaMensual}%/mes</span>
+        <span>Abono: ${fmt(c.abonoMensual)}/mes</span>
+        ${corteBadge ? `<span>${corteBadge}</span>` : ''}
+        ${pagoBadge}
+      </div>
+
+      <div class="proj-explain" style="margin-top:8px;">${payoffText}</div>
+
+      <div class="card-tile-pay">
+        <input type="number" inputmode="decimal" placeholder="Monto del pago" id="pay-amount-${c.id}">
+        <button class="btn-ghost" data-pay-card="${c.id}">Registrar pago</button>
+      </div>
+
+      <div class="proj-actions">
+        <button class="btn-ghost" data-card-edit="${c.id}">Editar</button>
+        <button class="btn-ghost" data-card-history="${c.id}">${isExpanded ? 'Ocultar pagos' : 'Ver pagos'}</button>
+        <button class="btn-ghost" data-card-del="${c.id}" style="color:var(--danger);">Eliminar</button>
+      </div>
+
+      ${isExpanded ? `
+        <div class="divider"></div>
+        ${payments.length ? payments.map(p=>`
+          <div class="hist-item">
+            <div><div>Pago</div><div class="meta">${p.date}${p.note?' · '+escapeHtml(p.note):''}</div></div>
+            <div class="amt ahorro">${fmt(p.amount)}</div>
+          </div>`).join('') : `<div class="empty-state" style="padding:10px 0;">Sin pagos registrados todavía.</div>`}
+      ` : ''}
+    </div>`;
+}
+
 function toCSV(){
   const rows = [['fecha','tipo','categoria','monto','nota']];
   [...state.entries].sort((a,b)=> a.date.localeCompare(b.date)).forEach(e=>{
@@ -965,16 +1261,6 @@ function renderAjustes(){
       <button data-fx-del="${i}">✕</button>
     </div>`).join('');
 
-  const debt = cfg.debt || { cards: [] };
-  const debtRows = debt.cards.map((c,i)=>`
-    <div class="fixed-row debt-row">
-      <input data-debt-name="${i}" value="${escapeHtml(c.name)}" placeholder="Nombre">
-      <input data-debt-saldo="${i}" type="number" value="${c.saldo}" placeholder="Saldo">
-      <input data-debt-tasa="${i}" type="number" step="0.1" value="${c.tasaMensual}" placeholder="Tasa % mensual">
-      <input data-debt-abono="${i}" type="number" value="${c.abonoMensual}" placeholder="Abono mensual">
-      <button data-debt-del="${i}">✕</button>
-    </div>`).join('');
-
   return `
     <div class="card">
       <h2>Cuenta</h2>
@@ -1004,13 +1290,6 @@ function renderAjustes(){
       <button class="btn-ghost" id="fx-add">+ Agregar gasto fijo</button>
       <div class="divider"></div>
       <button class="btn-primary" id="save-ajustes">Guardar cambios</button>
-    </div>
-    <div class="card">
-      <h2>Deudas / Tarjetas</h2>
-      <div class="small-label">Nombre · Saldo · Tasa mensual % · Abono mensual comprometido</div>
-      <div id="debt-rows">${debtRows}</div>
-      <button class="btn-ghost" id="debt-add">+ Agregar tarjeta / deuda</button>
-      <div class="setup-note" style="margin-top:10px;">Proyecciones y el bot usan esto para saber si tienes deuda generando interés antes de recomendarte un gasto nuevo. Actualiza los saldos cuando te llegue cada estado de cuenta.</div>
     </div>
     <div class="card">
       <h2>Bot (Pregúntale a Claude)</h2>
@@ -1135,6 +1414,93 @@ function attachHandlers(){
     questionInput.onkeydown = (e)=>{ if(e.key==='Enter') askBot(); };
   }
 
+  if(state.tab==='tarjetas'){
+    const openBtn = document.getElementById('card-add-open');
+    if(openBtn) openBtn.onclick = ()=>{
+      state.cardDraft = { editingId:null, name:'', bank:'', last4:'', saldo:'', limite:'', tasaMensual:'', abonoMensual:'', pagoMinimo:'', corteDia:'', pagoDia:'' };
+      state.showCardForm = true;
+      render();
+    };
+    const cancelBtn = document.getElementById('card-cancel');
+    if(cancelBtn) cancelBtn.onclick = ()=>{ state.showCardForm = false; state.cardDraft = null; render(); };
+
+    const saveBtn = document.getElementById('card-save');
+    if(saveBtn) saveBtn.onclick = async ()=>{
+      const name = document.getElementById('c-name').value.trim();
+      if(!name){ showToast('Ponle un nombre a la tarjeta'); return; }
+      const card = {
+        id: state.cardDraft.editingId || 'debt'+uid(),
+        name,
+        bank: document.getElementById('c-bank').value.trim(),
+        last4: document.getElementById('c-last4').value.trim().slice(0,4),
+        saldo: parseFloat(document.getElementById('c-saldo').value)||0,
+        limite: parseFloat(document.getElementById('c-limite').value)||0,
+        tasaMensual: parseFloat(document.getElementById('c-tasa').value)||0,
+        abonoMensual: parseFloat(document.getElementById('c-abono').value)||0,
+        pagoMinimo: parseFloat(document.getElementById('c-pago-minimo').value)||0,
+        corteDia: parseInt(document.getElementById('c-corte').value)||null,
+        pagoDia: parseInt(document.getElementById('c-pago').value)||null,
+      };
+      const cards = state.config.debt.cards;
+      const idx = cards.findIndex(x=>x.id===card.id);
+      if(idx>=0) cards[idx] = card; else cards.push(card);
+      await saveConfig();
+      state.showCardForm = false;
+      state.cardDraft = null;
+      showToast('Tarjeta guardada ✓');
+      render();
+    };
+
+    document.querySelectorAll('[data-card-edit]').forEach(b=>{
+      b.onclick = ()=>{
+        const c = state.config.debt.cards.find(x=>x.id===b.dataset.cardEdit);
+        if(!c) return;
+        state.cardDraft = {
+          editingId:c.id, name:c.name, bank:c.bank||'', last4:c.last4||'',
+          saldo:c.saldo, limite:c.limite, tasaMensual:c.tasaMensual, abonoMensual:c.abonoMensual,
+          pagoMinimo:c.pagoMinimo||0, corteDia:c.corteDia||'', pagoDia:c.pagoDia||'',
+        };
+        state.showCardForm = true;
+        render();
+      };
+    });
+    document.querySelectorAll('[data-card-del]').forEach(b=>{
+      b.onclick = async ()=>{
+        state.config.debt.cards = state.config.debt.cards.filter(x=>x.id!==b.dataset.cardDel);
+        await saveConfig();
+        showToast('Tarjeta eliminada');
+        render();
+      };
+    });
+    document.querySelectorAll('[data-card-history]').forEach(b=>{
+      b.onclick = ()=>{
+        state.expandedCard = state.expandedCard===b.dataset.cardHistory ? null : b.dataset.cardHistory;
+        render();
+      };
+    });
+    document.querySelectorAll('[data-pay-card]').forEach(b=>{
+      b.onclick = async ()=>{
+        const cardId = b.dataset.payCard;
+        const input = document.getElementById('pay-amount-'+cardId);
+        const amt = parseFloat(input.value);
+        if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
+        const card = state.config.debt.cards.find(c=>c.id===cardId);
+        if(!card) return;
+        const payment = { id: uid(), cardId, amount: amt, date: todayISO(), note: '' };
+        const { error } = await supa.from('card_payments').insert({
+          id: payment.id, user_id: state.session.user.id, card_id: cardId,
+          amount: amt, date: payment.date, note: null,
+        });
+        if(error){ showToast('No se pudo registrar el pago'); return; }
+        card.saldo = Math.max(0, card.saldo - amt);
+        await saveConfig();
+        state.cardPayments.unshift(payment);
+        showToast('Pago registrado ✓');
+        render();
+      };
+    });
+  }
+
   if(state.tab==='historial'){
     document.querySelectorAll('[data-del]').forEach(b=>{
       b.onclick = async ()=>{
@@ -1175,19 +1541,6 @@ function attachHandlers(){
       };
     });
 
-    document.getElementById('debt-add').onclick = ()=>{
-      if(!state.config.debt) state.config.debt = { cards: [] };
-      state.config.debt.cards.push({ id:'debt'+uid(), name:'Nueva tarjeta', saldo:0, tasaMensual:0, abonoMensual:0 });
-      render();
-      state.tab='ajustes';
-    };
-    document.querySelectorAll('[data-debt-del]').forEach(b=>{
-      b.onclick = ()=>{
-        state.config.debt.cards.splice(parseInt(b.dataset.debtDel),1);
-        render(); state.tab='ajustes';
-      };
-    });
-
     document.getElementById('save-ajustes').onclick = async ()=>{
       state.config.ingresoFijo = parseFloat(document.getElementById('a-ingreso').value)||0;
       state.config.apoyoVariable = parseFloat(document.getElementById('a-apoyo').value)||0;
@@ -1201,16 +1554,6 @@ function attachHandlers(){
         const amtInp = row.querySelector(`[data-fx-amt="${i}"]`);
         if(nameInp) state.config.fixedExpenses[i].name = nameInp.value;
         if(amtInp) state.config.fixedExpenses[i].monthly = parseFloat(amtInp.value)||0;
-      });
-      document.querySelectorAll('#debt-rows .debt-row').forEach((row,i)=>{
-        const nameInp = row.querySelector(`[data-debt-name="${i}"]`);
-        const saldoInp = row.querySelector(`[data-debt-saldo="${i}"]`);
-        const tasaInp = row.querySelector(`[data-debt-tasa="${i}"]`);
-        const abonoInp = row.querySelector(`[data-debt-abono="${i}"]`);
-        if(nameInp) state.config.debt.cards[i].name = nameInp.value;
-        if(saldoInp) state.config.debt.cards[i].saldo = parseFloat(saldoInp.value)||0;
-        if(tasaInp) state.config.debt.cards[i].tasaMensual = parseFloat(tasaInp.value)||0;
-        if(abonoInp) state.config.debt.cards[i].abonoMensual = parseFloat(abonoInp.value)||0;
       });
       await saveConfig();
 
@@ -1243,6 +1586,7 @@ function attachHandlers(){
           if(data.entries) state.entries = data.entries;
           if(data.proyecciones) state.proyecciones = data.proyecciones;
           if(!state.config.debt) state.config.debt = { cards: [] };
+          state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
           const userId = state.session.user.id;
           await saveConfig();
           if(state.entries.length){
@@ -1261,7 +1605,8 @@ function attachHandlers(){
     document.getElementById('btn-logout').onclick = async ()=>{
       await supa.auth.signOut();
       state.session = null;
-      state.config = null; state.entries = []; state.proyecciones = [];
+      state.config = null; state.entries = []; state.proyecciones = []; state.cardPayments = [];
+      state.showCardForm = false; state.cardDraft = null; state.expandedCard = null;
       render();
     };
   }

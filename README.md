@@ -27,9 +27,26 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
 - **Pregúntale a Claude**: dentro de la misma pestaña, un cuadro de chat que manda tu
   pregunta + un resumen de tu situación financiera actual (`buildFinancialContext()`) a
   la función `ask-bot`, que la reenvía a la API de Claude.
+- **Tarjetas**: pestaña dedicada al control de tus tarjetas de crédito. Por cada tarjeta:
+  banco, últimos 4 dígitos, saldo, límite (con barra de % de uso), tasa mensual, abono
+  mensual comprometido, día de corte y de pago, y pago mínimo. Incluye:
+  - **Resumen global**: deuda total, interés estimado del mes, abono total comprometido,
+    % de uso de crédito (solo entre las tarjetas con límite cargado), y qué tarjeta
+    conviene priorizar si tienes dinero extra (la de tasa más alta — método "avalancha").
+  - **Simulador de liquidación** (`simulatePayoff()`): con el saldo, tasa y abono actuales
+    de cada tarjeta, calcula en cuántos meses llegas a $0 y cuánto interés vas a pagar en
+    el camino — o te avisa si tu abono actual ni siquiera cubre el interés mensual, caso
+    en el que nunca bajaría el saldo.
+  - **Registrar pago**: descuenta el pago del saldo al instante y lo guarda en un
+    historial por tarjeta (tabla `card_payments`, separada de `entries` porque un pago a
+    tarjeta no es "gasto" en el presupuesto — es mover dinero ya presupuestado a deuda).
+  - **Alertas** en la pestaña Hoy: tarjeta cerca de su límite, pago que vence en los
+    próximos días, y abono que no alcanza a cubrir el interés del mes.
+  - El bot y el módulo de Proyecciones ya usan estos datos (utilización, simulación de
+    liquidación) como parte de tu contexto financiero.
 - **Cuenta**: login con correo y contraseña (Supabase Auth). Tus datos (config, gastos
-  fijos, deudas, movimientos, proyecciones) se guardan en Postgres, aislados por usuario
-  con Row Level Security — sincronizan solos entre tu teléfono y cualquier otro
+  fijos, tarjetas, pagos, movimientos, proyecciones) se guardan en Postgres, aislados por
+  usuario con Row Level Security — sincronizan solos entre tu teléfono y cualquier otro
   dispositivo donde inicies sesión. Si la app detecta datos viejos guardados en el
   navegador (de la versión anterior con localStorage), te ofrece importarlos a tu cuenta
   la primera vez que inicias sesión.
@@ -41,7 +58,10 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
 1. Crea una cuenta gratis en [supabase.com](https://supabase.com) y un proyecto nuevo.
 2. Ve a **SQL Editor** → pega el contenido completo de `supabase/schema.sql` → *Run*.
    Esto crea las tablas, activa Row Level Security, y un trigger que le crea su fila de
-   perfil a cada cuenta nueva automáticamente.
+   perfil a cada cuenta nueva automáticamente. Si ya lo habías corrido antes (versión sin
+   el módulo de Tarjetas), vuelve a correr el archivo completo — usa `alter table ... add
+   column if not exists` y `create table if not exists`, así que es seguro repetirlo y
+   solo agrega lo que falte (columnas de tarjeta y la tabla `card_payments`).
 3. Ve a **Project Settings → API** y copia dos valores:
    - **Project URL**
    - **anon public key**

@@ -44,6 +44,29 @@ create table if not exists debts (
   tasa_mensual    numeric not null default 0,
   abono_mensual   numeric not null default 0
 );
+-- Detalle ampliado de tarjeta (se agrega con alter para no romper instalaciones
+-- que ya corrieron la versión anterior de este schema).
+alter table debts add column if not exists bank          text;
+alter table debts add column if not exists last4         text;
+alter table debts add column if not exists limite        numeric not null default 0;
+alter table debts add column if not exists corte_dia     int;
+alter table debts add column if not exists pago_dia      int;
+alter table debts add column if not exists pago_minimo   numeric not null default 0;
+
+-- ---------------------------------------------------------------------------
+-- Pagos registrados a una tarjeta (histórico; no son "gasto" en el
+-- presupuesto, son abono a deuda — por eso viven separados de entries).
+-- ---------------------------------------------------------------------------
+create table if not exists card_payments (
+  id          text primary key,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  card_id     text not null,
+  amount      numeric not null,
+  date        date not null,
+  note        text,
+  created_at  timestamptz not null default now()
+);
+create index if not exists card_payments_user_card_idx on card_payments(user_id, card_id, date desc);
 
 -- ---------------------------------------------------------------------------
 -- Movimientos (gasto / ingreso / ahorro)
@@ -79,6 +102,7 @@ create table if not exists projections (
 alter table profiles         enable row level security;
 alter table fixed_expenses   enable row level security;
 alter table debts            enable row level security;
+alter table card_payments    enable row level security;
 alter table entries          enable row level security;
 alter table projections      enable row level security;
 
@@ -92,6 +116,10 @@ create policy "own fixed_expenses" on fixed_expenses
 
 drop policy if exists "own debts" on debts;
 create policy "own debts" on debts
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "own card_payments" on card_payments;
+create policy "own card_payments" on card_payments
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 drop policy if exists "own entries" on entries;
