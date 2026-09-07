@@ -303,14 +303,21 @@ function normalizeCard(c){
   };
 }
 
-/* ---------- arranque + sesión (Supabase Auth) ---------- */
+/* ---------- arranque + sesión (Supabase Auth es opcional) ---------- */
+// Si no hay config.js (o no tiene URL/anon key), la app funciona en modo local:
+// todo se guarda en localStorage, sin pedir cuenta, igual que la primera versión.
+// Si sí hay Supabase configurado, se activa login + sincronización en la nube.
+function isCloud(){ return !!(supa && state.session); }
+
 async function boot(){
   try{
     state.accessCode = localStorage.getItem('panel_access_code') || '';
   }catch(e){ state.accessCode = ''; }
 
   if(!supa){
-    document.getElementById('app').innerHTML = renderMissingConfig();
+    loadLocalData();
+    state.tab = 'hoy';
+    render();
     return;
   }
 
@@ -332,18 +339,99 @@ async function boot(){
   else { render(); }
 }
 
-function renderMissingConfig(){
-  return `
-    <div class="wrap" style="padding-top:60px;">
-      <div class="card">
-        <h2>Falta configurar Supabase</h2>
-        <div class="setup-note" style="margin-bottom:0;">
-          Copia <code>public/config.example.js</code> a <code>public/config.js</code> y pon la URL y
-          la anon key de tu proyecto de Supabase (Project Settings → API). Sin eso la app no tiene
-          dónde guardar tus datos. Revisa el README para los pasos completos.
-        </div>
-      </div>
-    </div>`;
+/* ---------- modo local (sin Supabase configurado) ---------- */
+function loadLocalData(){
+  try{
+    const c = localStorage.getItem('panel_config');
+    state.config = c ? JSON.parse(c) : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  }catch(e){ state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
+  if(!state.config.debt) state.config.debt = { cards: [] };
+  state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
+  if(typeof state.config.apoyoVariable !== 'number') state.config.apoyoVariable = 0;
+  try{
+    const e = localStorage.getItem('panel_entries');
+    state.entries = e ? JSON.parse(e) : [];
+  }catch(e){ state.entries = []; }
+  try{
+    const p = localStorage.getItem('panel_proyecciones');
+    state.proyecciones = p ? JSON.parse(p) : [];
+  }catch(e){ state.proyecciones = []; }
+  try{
+    const cp = localStorage.getItem('panel_card_payments');
+    state.cardPayments = cp ? JSON.parse(cp) : [];
+  }catch(e){ state.cardPayments = []; }
+}
+async function persistEntriesLocal(){
+  try{ localStorage.setItem('panel_entries', JSON.stringify(state.entries)); }catch(e){ showToast('No se pudo guardar'); }
+}
+async function persistProjectionsLocal(){
+  try{ localStorage.setItem('panel_proyecciones', JSON.stringify(state.proyecciones)); }catch(e){ showToast('No se pudo guardar'); }
+}
+async function persistCardPaymentsLocal(){
+  try{ localStorage.setItem('panel_card_payments', JSON.stringify(state.cardPayments)); }catch(e){ showToast('No se pudo guardar'); }
+}
+
+/* ---------- persistencia (nube si hay sesión, si no local) ---------- */
+async function addEntryPersist(entry){
+  if(isCloud()){
+    const { error } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
+    if(error) return false;
+    state.entries.push(entry);
+  } else {
+    state.entries.push(entry);
+    await persistEntriesLocal();
+  }
+  return true;
+}
+async function deleteEntryPersist(id){
+  if(isCloud()){
+    const { error } = await supa.from('entries').delete().eq('id', id);
+    if(error) return false;
+    state.entries = state.entries.filter(e=>e.id!==id);
+  } else {
+    state.entries = state.entries.filter(e=>e.id!==id);
+    await persistEntriesLocal();
+  }
+  return true;
+}
+async function addProjectionPersist(proj){
+  if(isCloud()){
+    const { error } = await supa.from('projections').insert({
+      id: proj.id, user_id: state.session.user.id, description: proj.desc,
+      amount: proj.amount, category: proj.category, target_month: proj.targetMonth,
+    });
+    if(error) return false;
+    state.proyecciones.push(proj);
+  } else {
+    state.proyecciones.push(proj);
+    await persistProjectionsLocal();
+  }
+  return true;
+}
+async function deleteProjectionPersist(id){
+  if(isCloud()){
+    const { error } = await supa.from('projections').delete().eq('id', id);
+    if(error) return false;
+    state.proyecciones = state.proyecciones.filter(p=>p.id!==id);
+  } else {
+    state.proyecciones = state.proyecciones.filter(p=>p.id!==id);
+    await persistProjectionsLocal();
+  }
+  return true;
+}
+async function addCardPaymentPersist(payment){
+  if(isCloud()){
+    const { error } = await supa.from('card_payments').insert({
+      id: payment.id, user_id: state.session.user.id, card_id: payment.cardId,
+      amount: payment.amount, date: payment.date, note: null,
+    });
+    if(error) return false;
+    state.cardPayments.unshift(payment);
+  } else {
+    state.cardPayments.unshift(payment);
+    await persistCardPaymentsLocal();
+  }
+  return true;
 }
 
 async function initUserData(){
@@ -407,6 +495,11 @@ async function loadCardPaymentsFromSupabase(userId){
 }
 
 async function saveConfig(){
+  if(!isCloud()){
+    try{ localStorage.setItem('panel_config', JSON.stringify(state.config)); }
+    catch(e){ showToast('No se pudo guardar'); }
+    return;
+  }
   const userId = state.session.user.id;
   const cfg = state.config;
   try{
@@ -695,7 +788,7 @@ function render(){
   const app = document.getElementById('app');
   const tabsNav = document.getElementById('tabs');
 
-  if(!state.session){
+  if(supa && !state.session){
     tabsNav.style.display = 'none';
     app.innerHTML = renderAuth();
     attachAuthHandlers();
@@ -1261,12 +1354,19 @@ function renderAjustes(){
       <button data-fx-del="${i}">✕</button>
     </div>`).join('');
 
-  return `
+  const cuentaCard = state.session ? `
     <div class="card">
       <h2>Cuenta</h2>
       <div class="setup-note" style="margin-bottom:10px;">Conectado como <b style="color:var(--text);">${escapeHtml(state.session.user.email||'')}</b>. Tus datos se guardan en la nube y se sincronizan entre dispositivos.</div>
       <button class="btn-ghost" id="btn-logout">Cerrar sesión</button>
-    </div>
+    </div>` : `
+    <div class="card">
+      <h2>Cuenta</h2>
+      <div class="setup-note" style="margin-bottom:0;">Modo local: tus datos viven solo en este navegador (no piden cuenta). Si cambias de teléfono o borras datos del navegador, se pierden — usa el respaldo de abajo. Para sincronizar entre dispositivos, configura Supabase (ver README).</div>
+    </div>`;
+
+  return `
+    ${cuentaCard}
     <div class="card">
       <h2>Ingresos</h2>
       <div class="split">
@@ -1330,9 +1430,8 @@ function attachHandlers(){
       const type = state.entryDraft.type;
       const category = type==='gasto' ? document.getElementById('f-cat').value : null;
       const entry = { id: uid(), type, category, amount: amt, note, date };
-      const { error } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
-      if(error){ showToast('No se pudo guardar'); return; }
-      state.entries.push(entry);
+      const ok = await addEntryPersist(entry);
+      if(!ok){ showToast('No se pudo guardar'); return; }
       state.entryDraft = { type:'gasto', category:null, amount:'', note:'', date: todayISO() };
       showToast('Guardado ✓');
       state.tab = 'hoy';
@@ -1349,21 +1448,16 @@ function attachHandlers(){
       if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
       if(!month){ showToast('Elige un mes'); return; }
       const proj = { id: uid(), desc, amount: amt, category: cat, targetMonth: month, createdAt: todayISO() };
-      const { error } = await supa.from('projections').insert({
-        id: proj.id, user_id: state.session.user.id, description: proj.desc,
-        amount: proj.amount, category: proj.category, target_month: proj.targetMonth,
-      });
-      if(error){ showToast('No se pudo guardar'); return; }
-      state.proyecciones.push(proj);
+      const ok = await addProjectionPersist(proj);
+      if(!ok){ showToast('No se pudo guardar'); return; }
       state.projDraft = { desc:'', amount:'', category: cat, targetMonth: month };
       showToast('Proyección guardada ✓');
       render();
     };
     document.querySelectorAll('[data-proj-del]').forEach(b=>{
       b.onclick = async ()=>{
-        const { error } = await supa.from('projections').delete().eq('id', b.dataset.projDel);
-        if(error){ showToast('No se pudo eliminar'); return; }
-        state.proyecciones = state.proyecciones.filter(p=>p.id!==b.dataset.projDel);
+        const ok = await deleteProjectionPersist(b.dataset.projDel);
+        if(!ok){ showToast('No se pudo eliminar'); return; }
         render();
       };
     });
@@ -1372,12 +1466,10 @@ function attachHandlers(){
         const p = state.proyecciones.find(x=>x.id===b.dataset.projDone);
         if(p){
           const entry = { id: uid(), type:'gasto', category: p.category, amount: p.amount, note: p.desc, date: todayISO() };
-          const { error: e1 } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
-          if(e1){ showToast('No se pudo registrar el gasto'); return; }
-          const { error: e2 } = await supa.from('projections').delete().eq('id', p.id);
-          state.entries.push(entry);
-          state.proyecciones = state.proyecciones.filter(x=>x.id!==p.id);
-          showToast(e2 ? 'Gasto registrado, pero no se pudo quitar la proyección' : 'Registrado como gasto ✓');
+          const ok1 = await addEntryPersist(entry);
+          if(!ok1){ showToast('No se pudo registrar el gasto'); return; }
+          const ok2 = await deleteProjectionPersist(p.id);
+          showToast(ok2 ? 'Registrado como gasto ✓' : 'Gasto registrado, pero no se pudo quitar la proyección');
         }
         render();
       };
@@ -1487,14 +1579,10 @@ function attachHandlers(){
         const card = state.config.debt.cards.find(c=>c.id===cardId);
         if(!card) return;
         const payment = { id: uid(), cardId, amount: amt, date: todayISO(), note: '' };
-        const { error } = await supa.from('card_payments').insert({
-          id: payment.id, user_id: state.session.user.id, card_id: cardId,
-          amount: amt, date: payment.date, note: null,
-        });
-        if(error){ showToast('No se pudo registrar el pago'); return; }
+        const ok = await addCardPaymentPersist(payment);
+        if(!ok){ showToast('No se pudo registrar el pago'); return; }
         card.saldo = Math.max(0, card.saldo - amt);
         await saveConfig();
-        state.cardPayments.unshift(payment);
         showToast('Pago registrado ✓');
         render();
       };
@@ -1504,9 +1592,8 @@ function attachHandlers(){
   if(state.tab==='historial'){
     document.querySelectorAll('[data-del]').forEach(b=>{
       b.onclick = async ()=>{
-        const { error } = await supa.from('entries').delete().eq('id', b.dataset.del);
-        if(error){ showToast('No se pudo eliminar'); return; }
-        state.entries = state.entries.filter(e=>e.id!==b.dataset.del);
+        const ok = await deleteEntryPersist(b.dataset.del);
+        if(!ok){ showToast('No se pudo eliminar'); return; }
         render();
       };
     });
@@ -1587,13 +1674,18 @@ function attachHandlers(){
           if(data.proyecciones) state.proyecciones = data.proyecciones;
           if(!state.config.debt) state.config.debt = { cards: [] };
           state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
-          const userId = state.session.user.id;
           await saveConfig();
-          if(state.entries.length){
-            await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
-          }
-          if(state.proyecciones.length){
-            await supa.from('projections').upsert(state.proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));
+          if(isCloud()){
+            const userId = state.session.user.id;
+            if(state.entries.length){
+              await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
+            }
+            if(state.proyecciones.length){
+              await supa.from('projections').upsert(state.proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));
+            }
+          } else {
+            await persistEntriesLocal();
+            await persistProjectionsLocal();
           }
           showToast('Respaldo restaurado ✓');
           render();
@@ -1602,7 +1694,8 @@ function attachHandlers(){
       reader.readAsText(file);
     };
 
-    document.getElementById('btn-logout').onclick = async ()=>{
+    const logoutBtn = document.getElementById('btn-logout');
+    if(logoutBtn) logoutBtn.onclick = async ()=>{
       await supa.auth.signOut();
       state.session = null;
       state.config = null; state.entries = []; state.proyecciones = []; state.cardPayments = [];

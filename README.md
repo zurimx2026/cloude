@@ -1,14 +1,23 @@
 # Panel — Finanzas personales
 
 App de finanzas personales: registro diario, alertas, proyecciones de gastos futuros,
-un bot integrado que responde con Claude usando tu contexto financiero actual, y ahora
-login + base de datos en la nube (Supabase) con sincronización entre dispositivos.
+control de tarjetas de crédito, y un bot integrado que responde con Claude usando tu
+contexto financiero actual.
+
+**Supabase (login + base de datos en la nube) es opcional.** Sin configurarlo, la app
+funciona sola con localStorage — sin pedir cuenta, lista para usarse en cuanto la subes a
+Netlify. Si más adelante configuras `public/config.js` (ver más abajo), se activa el login
+y tus datos empiezan a sincronizar entre dispositivos. Puedes empezar sin Supabase y
+agregarlo después sin perder nada — la primera vez que inicies sesión, la app detecta lo
+que ya tenías guardado en el navegador y te ofrece importarlo a tu cuenta nueva.
 
 ## Estructura
 
 ```
-public/index.html            App (una sola página, sin build). Requiere sesión (Supabase
-                              Auth); todos los datos viven en Postgres, no en localStorage.
+public/index.html            App (una sola página, sin build). Funciona en modo local
+                              (localStorage) si no hay config.js; con Supabase configurado,
+                              pide login y todo vive en Postgres, sincronizado entre
+                              dispositivos.
 public/config.example.js     Plantilla de config.js (URL + anon key de tu proyecto Supabase).
 netlify/functions/ask-bot.js Función serverless: llama a la API de Claude con tu API key
                               guardada en el servidor, y valida que quien pregunta tenga
@@ -44,16 +53,24 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
     próximos días, y abono que no alcanza a cubrir el interés del mes.
   - El bot y el módulo de Proyecciones ya usan estos datos (utilización, simulación de
     liquidación) como parte de tu contexto financiero.
-- **Cuenta**: login con correo y contraseña (Supabase Auth). Tus datos (config, gastos
-  fijos, tarjetas, pagos, movimientos, proyecciones) se guardan en Postgres, aislados por
-  usuario con Row Level Security — sincronizan solos entre tu teléfono y cualquier otro
-  dispositivo donde inicies sesión. Si la app detecta datos viejos guardados en el
-  navegador (de la versión anterior con localStorage), te ofrece importarlos a tu cuenta
-  la primera vez que inicias sesión.
+- **Cuenta** (opcional): si configuras Supabase, se activa login con correo y contraseña.
+  Tus datos (config, gastos fijos, tarjetas, pagos, movimientos, proyecciones) se guardan
+  en Postgres, aislados por usuario con Row Level Security — sincronizan solos entre tu
+  teléfono y cualquier otro dispositivo donde inicies sesión. Si la app detecta datos ya
+  guardados en el navegador (de cuando corría en modo local), te ofrece importarlos a tu
+  cuenta la primera vez que inicias sesión. Sin Supabase configurado, la app simplemente
+  no pide cuenta y todo vive en el navegador — ver "Puesta en marcha" abajo.
 
 ## Puesta en marcha
 
-### 1. Crear el proyecto de Supabase (base de datos + login)
+### Opción rápida: desplegar ya, sin Supabase
+
+Si solo quieres que la app funcione en Netlify hoy (guardando todo en el navegador, sin
+login), sáltate directo a **"2. Desplegar en Netlify"** y omite todo lo de `config.js` —
+sin ese archivo, la app arranca en modo local automáticamente. Puedes agregar Supabase
+cuando quieras después, sin perder tus datos (te los ofrece importar al crear tu cuenta).
+
+### 1. Crear el proyecto de Supabase (opcional — activa login + sincronización en la nube)
 
 1. Crea una cuenta gratis en [supabase.com](https://supabase.com) y un proyecto nuevo.
 2. Ve a **SQL Editor** → pega el contenido completo de `supabase/schema.sql` → *Run*.
@@ -77,25 +94,29 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
 1. Netlify → *Add new site* → *Import an existing project* → selecciona este repo.
    Build command: vacío. Publish directory: `public`. (`netlify.toml` ya define todo lo
    demás, incluyendo `netlify/functions`.)
-2. `public/config.js` está en `.gitignore` porque cada quien pone ahí los valores de su
-   propio proyecto de Supabase — pero como es un sitio conectado a git (deploy continuo),
-   Netlify solo sirve lo que esté en el repo. La forma más simple: quita esa línea de
-   `.gitignore` y haz commit de tu `config.js` real — no pasa nada porque la anon key es
-   segura para ser pública (la protección de verdad es el Row Level Security del paso
-   anterior). Si prefieres no tenerlo en git, la alternativa es agregar un build command
-   en Netlify que lo genere en cada deploy a partir de variables de entorno (`echo
-   "window.SUPABASE_URL='$SUPABASE_URL'; window.SUPABASE_ANON_KEY='$SUPABASE_ANON_KEY';" >
-   public/config.js`), configurando esas dos variables en Netlify.
-3. **Variables de entorno** en Netlify → *Site configuration → Environment variables*:
+2. Sin hacer nada más, dale **Deploy**. Sin `public/config.js` en el repo, la app arranca
+   en modo local (sin pedir cuenta) — ya está lista para usarse.
+3. **Solo si quieres activar Supabase** (login + sincronización): `public/config.js` está
+   en `.gitignore` porque cada quien pone ahí los valores de su propio proyecto — pero
+   como es un sitio conectado a git (deploy continuo), Netlify solo sirve lo que esté en
+   el repo. La forma más simple: quita esa línea de `.gitignore` y haz commit de tu
+   `config.js` real — no pasa nada porque la anon key es segura para ser pública (la
+   protección de verdad es el Row Level Security del paso 1). Si prefieres no tenerlo en
+   git, la alternativa es agregar un build command en Netlify que lo genere en cada
+   deploy a partir de variables de entorno (`echo "window.SUPABASE_URL='$SUPABASE_URL';
+   window.SUPABASE_ANON_KEY='$SUPABASE_ANON_KEY';" > public/config.js`), configurando
+   esas dos variables en Netlify.
+4. **Variables de entorno** (opcionales) en Netlify → *Site configuration → Environment
+   variables*:
    - `ANTHROPIC_API_KEY` — tu API key de la Consola de Anthropic
      (https://console.anthropic.com/settings/keys). Sin esto, el bot responde con un
      error controlado; el resto de la app funciona normal.
-   - `SUPABASE_JWT_SECRET` — Project Settings → API → **JWT Secret** de tu proyecto
-     Supabase. Con esto, la función del bot exige una sesión real (login) antes de
-     contestar — nadie sin cuenta puede gastar tu crédito de API.
-   - `APP_ACCESS_CODE` (opcional) — candado alterno si por alguna razón no configuras
-     `SUPABASE_JWT_SECRET`.
-4. Deploy — cada push a la rama conectada dispara un deploy automático.
+   - `SUPABASE_JWT_SECRET` — solo si activaste Supabase. Project Settings → API → **JWT
+     Secret** de tu proyecto. Con esto, la función del bot exige una sesión real (login)
+     antes de contestar — nadie sin cuenta puede gastar tu crédito de API.
+   - `APP_ACCESS_CODE` (opcional) — candado alterno si no usas Supabase pero igual quieres
+     proteger el bot con una palabra clave.
+5. Deploy — cada push a la rama conectada dispara un deploy automático.
 
 ### Probar localmente
 
