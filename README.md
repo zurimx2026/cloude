@@ -53,6 +53,33 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
     próximos días, y abono que no alcanza a cubrir el interés del mes.
   - El bot y el módulo de Proyecciones ya usan estos datos (utilización, simulación de
     liquidación) como parte de tu contexto financiero.
+  - **"¿Y si pago extra?"**: calculadora de abono hipotético — pon un extra mensual y
+    compara contra tu abono actual cuántos meses y cuánto interés te ahorrarías.
+- **Inversión**: pestaña de control de inversiones (CETES, fondos indexados, plazo fijo,
+  etc. — el tipo es texto libre, solo para mostrar). Por inversión: monto inicial,
+  aportación mensual, tasa anual estimada y fecha de inicio. Proyecta el valor estimado a
+  12/24/60 meses con interés compuesto simple (`estimateInvestmentValue()`) — no considera
+  comisiones ni impuestos, es una estimación para orientar, no un cálculo contable.
+- **Ahorro: emergencia vs propósito**: los movimientos de ahorro ahora piden si son para tu
+  fondo de emergencia o para una meta con nombre (viaje, enganche, etc.). En Ajustes defines
+  qué % de tu ahorro total va a cada uno. En Hoy se ven como dos barras separadas, y la de
+  emergencia además muestra a cuántos meses de tus gastos fijos equivale lo acumulado — esa
+  es la métrica que de verdad importa para un fondo de emergencia, no solo el monto en pesos.
+- **Ingresos**: los movimientos de ingreso ahora piden una fuente (Nómina, Freelance, Apoyo
+  variable, Renta, Otro). En Historial hay una sección que compara tu ingreso real del mes
+  contra lo configurado (fijo + apoyo variable), el desglose por fuente, y una gráfica de
+  barras de los últimos 6 meses para detectar meses flacos.
+- **Patrimonio neto**: en la parte de arriba de Hoy, `ahorro acumulado + valor estimado de
+  inversiones − deuda total`, con su desglose. Es el indicador más importante de toda la
+  app — todo lo demás (presupuesto, deuda, ahorro, inversión) alimenta este número.
+- **Cierres mensuales**: en Historial, un botón "Cerrar [mes]" congela un snapshot del mes
+  que acaba de terminar (ingresos, gastos por categoría, ahorro, interés pagado, deuda,
+  inversión y patrimonio neto) junto con un diagnóstico automático en texto (categoría que
+  más se salió de presupuesto, Diversión vs. tu promedio de los últimos 3 meses cerrados,
+  si algún abono no cubrió el interés generado, y si tu patrimonio neto subió o bajó y por
+  qué). Es un snapshot congelado a propósito — no se recalcula después — para poder comparar
+  meses futuros contra un dato fijo aunque edites movimientos viejos. Si ya pasó el día 1
+  del mes y no cerraste el anterior, te avisa en Alertas.
 - **Cuenta** (opcional): si configuras Supabase, se activa login con correo y contraseña.
   Tus datos (config, gastos fijos, tarjetas, pagos, movimientos, proyecciones) se guardan
   en Postgres, aislados por usuario con Row Level Security — sincronizan solos entre tu
@@ -75,10 +102,10 @@ cuando quieras después, sin perder tus datos (te los ofrece importar al crear t
 1. Crea una cuenta gratis en [supabase.com](https://supabase.com) y un proyecto nuevo.
 2. Ve a **SQL Editor** → pega el contenido completo de `supabase/schema.sql` → *Run*.
    Esto crea las tablas, activa Row Level Security, y un trigger que le crea su fila de
-   perfil a cada cuenta nueva automáticamente. Si ya lo habías corrido antes (versión sin
-   el módulo de Tarjetas), vuelve a correr el archivo completo — usa `alter table ... add
-   column if not exists` y `create table if not exists`, así que es seguro repetirlo y
-   solo agrega lo que falte (columnas de tarjeta y la tabla `card_payments`).
+   perfil a cada cuenta nueva automáticamente. Si ya lo habías corrido antes (de una
+   versión sin Tarjetas, Inversión o Cierres mensuales), vuelve a correr el archivo
+   completo — usa `alter table ... add column if not exists` y `create table if not
+   exists`, así que es seguro repetirlo y solo agrega lo que falte.
 3. Ve a **Project Settings → API** y copia dos valores:
    - **Project URL**
    - **anon public key**

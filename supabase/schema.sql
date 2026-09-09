@@ -19,6 +19,10 @@ create table if not exists profiles (
   alloc_diversion   numeric not null default 15,
   updated_at        timestamptz not null default now()
 );
+-- % del ahorro que va a fondo de emergencia (el resto va a ahorro con propósito),
+-- y meta de meses de gastos fijos que el fondo de emergencia debería cubrir.
+alter table profiles add column if not exists emergencia_pct_of_ahorro numeric not null default 50;
+alter table profiles add column if not exists meta_emergencia_meses    numeric not null default 3;
 
 -- ---------------------------------------------------------------------------
 -- Gastos fijos (Gasolina, Gym, etc.) — el id es un slug de texto, no uuid,
@@ -82,6 +86,44 @@ create table if not exists entries (
   created_at  timestamptz not null default now()
 );
 create index if not exists entries_user_date_idx on entries(user_id, date desc);
+-- subtype: para movimientos tipo 'ahorro' -> 'emergencia' | 'proposito'.
+-- meta_nombre: nombre de la meta de ahorro con propósito (ej. "viaje").
+-- fuente: para movimientos tipo 'ingreso' -> nomina | freelance | apoyo_variable | renta | otro.
+alter table entries add column if not exists subtype     text;
+alter table entries add column if not exists meta_nombre text;
+alter table entries add column if not exists fuente      text;
+
+-- ---------------------------------------------------------------------------
+-- Inversiones (CETES, fondos indexados, plazo fijo, etc. — type es texto libre,
+-- solo para mostrar, sin lógica especial por tipo de instrumento)
+-- ---------------------------------------------------------------------------
+create table if not exists investments (
+  id                    text primary key,
+  user_id               uuid not null references auth.users(id) on delete cascade,
+  name                  text not null,
+  type                  text,
+  monto_inicial         numeric not null default 0,
+  aportacion_mensual    numeric not null default 0,
+  tasa_anual_estimada   numeric not null default 0,
+  fecha_inicio          date not null default current_date
+);
+
+-- ---------------------------------------------------------------------------
+-- Cierres mensuales: snapshot congelado de fin de mes, para poder comparar
+-- meses futuros contra un dato fijo aunque después se editen movimientos viejos.
+-- "data" guarda el snapshot completo (ingresos, gastos, ahorro, deuda,
+-- inversión, patrimonio neto y el diagnóstico de texto) — un solo objeto JSON
+-- en vez de una columna por campo, porque es un registro histórico de solo
+-- lectura, no algo que se consulte por columna individual.
+-- ---------------------------------------------------------------------------
+create table if not exists monthly_summaries (
+  id          text primary key,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  month       text not null, -- 'YYYY-MM'
+  data        jsonb not null,
+  created_at  timestamptz not null default now(),
+  unique(user_id, month)
+);
 
 -- ---------------------------------------------------------------------------
 -- Proyecciones (gastos futuros planeados)
@@ -99,12 +141,14 @@ create table if not exists projections (
 -- ---------------------------------------------------------------------------
 -- Row Level Security: cada quien ve y escribe solo sus propias filas
 -- ---------------------------------------------------------------------------
-alter table profiles         enable row level security;
-alter table fixed_expenses   enable row level security;
-alter table debts            enable row level security;
-alter table card_payments    enable row level security;
-alter table entries          enable row level security;
-alter table projections      enable row level security;
+alter table profiles          enable row level security;
+alter table fixed_expenses    enable row level security;
+alter table debts             enable row level security;
+alter table card_payments     enable row level security;
+alter table entries           enable row level security;
+alter table projections       enable row level security;
+alter table investments       enable row level security;
+alter table monthly_summaries enable row level security;
 
 drop policy if exists "own profile" on profiles;
 create policy "own profile" on profiles
@@ -128,6 +172,14 @@ create policy "own entries" on entries
 
 drop policy if exists "own projections" on projections;
 create policy "own projections" on projections
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "own investments" on investments;
+create policy "own investments" on investments
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+drop policy if exists "own monthly_summaries" on monthly_summaries;
+create policy "own monthly_summaries" on monthly_summaries
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------

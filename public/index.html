@@ -55,8 +55,8 @@
   }
   nav.tabs button{
     flex:1;background:none;border:none;color:var(--muted);
-    font-family:'Manrope',sans-serif;font-weight:700;font-size:9.5px;
-    letter-spacing:0;text-transform:uppercase;
+    font-family:'Manrope',sans-serif;font-weight:700;font-size:8.5px;
+    letter-spacing:0;text-transform:uppercase;line-height:1.25;
     padding:7px 1px;border-radius:10px;cursor:pointer;
   }
   nav.tabs button.active{color:var(--bg);background:var(--accent);}
@@ -213,6 +213,7 @@
   <button data-tab="registrar">Registrar</button>
   <button data-tab="proyectar">Proyectar</button>
   <button data-tab="tarjetas">Tarjetas</button>
+  <button data-tab="inversion">Inversión</button>
   <button data-tab="historial">Historial</button>
   <button data-tab="ajustes">Ajustes</button>
 </nav>
@@ -230,7 +231,8 @@ const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DEFAULT_CONFIG = {
   ingresoFijo: 6000,
   apoyoVariable: 2500,
-  allocPct: { ahorro: 12, estiloVida: 73, diversion: 15 },
+  allocPct: { ahorro: 12, estiloVida: 73, diversion: 15, emergenciaPctOfAhorro: 50 },
+  metaFondoEmergenciaMeses: 3,
   fixedExpenses: [
     { id: 'gasolina',  name: 'Gasolina',       icon:'⛽', monthly: 1600 },
     { id: 'gym',       name: 'Gym',            icon:'🏋️', monthly: 1100 },
@@ -247,7 +249,8 @@ const DEFAULT_CONFIG = {
       { id:'joy',      name:'JOY',      bank:'', last4:'0883', saldo:7809.71,  limite:0, tasaMensual:5.6, abonoMensual:2000, pagoMinimo:0, corteDia:null, pagoDia:null },
       { id:'clasica',  name:'CLÁSICA',  bank:'', last4:'4612', saldo:10034.22, limite:0, tasaMensual:1.4, abonoMensual:0,    pagoMinimo:0, corteDia:null, pagoDia:null },
     ]
-  }
+  },
+  investments: [],
 };
 
 let state = {
@@ -264,9 +267,15 @@ let state = {
   showCardForm: false,
   cardDraft: null,
   expandedCard: null,
+  cardWhatIf: {},
+  showInvestmentForm: false,
+  investmentDraft: null,
+  monthlySummaries: [],
+  expandedSummary: null,
   tab: 'hoy',
   showExport: false,
-  entryDraft: { type:'gasto', category:null, amount:'', note:'', date: todayISO() },
+  showBackup: false,
+  entryDraft: { type:'gasto', category:null, subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() },
   projDraft: { desc:'', amount:'', category:'otro', targetMonth: nextMonthKey() },
   chat: { messages: [], loading: false },
   accessCode: ''
@@ -302,6 +311,52 @@ function normalizeCard(c){
     pagoDia: c.pagoDia ? Number(c.pagoDia) : null,
   };
 }
+function normalizeInvestment(i){
+  return {
+    id: i.id || 'inv'+uid(),
+    name: i.name || 'Inversión',
+    type: i.type || '',
+    montoInicial: Number(i.montoInicial)||0,
+    aportacionMensual: Number(i.aportacionMensual)||0,
+    tasaAnualEstimada: Number(i.tasaAnualEstimada)||0,
+    fechaInicio: i.fechaInicio || todayISO(),
+  };
+}
+// Interés compuesto simple: monto inicial creciendo mes a mes a la tasa mensual
+// equivalente, más una aportación mensual constante que también empieza a generar
+// rendimiento desde el mes en que se aporta. No pretende ser exacto a nivel
+// contable (no considera comisiones, impuestos, ni tasas variables) — es una
+// estimación para orientar, igual que evaluateProjection() y simulatePayoff().
+function investmentMonthsElapsed(inv, asOf){
+  const start = new Date((inv.fechaInicio||todayISO())+'T12:00:00');
+  const ref = asOf || new Date();
+  return Math.max(0, (ref.getFullYear()-start.getFullYear())*12 + (ref.getMonth()-start.getMonth()));
+}
+function estimateInvestmentValue(inv, monthsAhead){
+  const months = investmentMonthsElapsed(inv) + (monthsAhead||0);
+  const tasaMensual = (inv.tasaAnualEstimada||0)/100/12;
+  let valor = inv.montoInicial||0;
+  for(let i=0;i<months;i++){
+    valor = valor*(1+tasaMensual) + (inv.aportacionMensual||0);
+  }
+  return valor;
+}
+// Rellena valores por defecto en un config que puede venir de una versión vieja
+// (localStorage viejo, un respaldo JSON viejo, o una fila de Supabase sin las
+// columnas nuevas) — un solo lugar para no repetir estos checks en cada punto
+// de carga/restauración.
+function normalizeConfig(cfg){
+  if(!cfg) cfg = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+  if(!cfg.debt) cfg.debt = { cards: [] };
+  cfg.debt.cards = cfg.debt.cards.map(normalizeCard);
+  if(!Array.isArray(cfg.investments)) cfg.investments = [];
+  cfg.investments = cfg.investments.map(normalizeInvestment);
+  if(typeof cfg.apoyoVariable !== 'number') cfg.apoyoVariable = 0;
+  if(!cfg.allocPct) cfg.allocPct = { ahorro:12, estiloVida:73, diversion:15 };
+  if(typeof cfg.allocPct.emergenciaPctOfAhorro !== 'number') cfg.allocPct.emergenciaPctOfAhorro = 50;
+  if(typeof cfg.metaFondoEmergenciaMeses !== 'number') cfg.metaFondoEmergenciaMeses = 3;
+  return cfg;
+}
 
 /* ---------- arranque + sesión (Supabase Auth es opcional) ---------- */
 // Si no hay config.js (o no tiene URL/anon key), la app funciona en modo local:
@@ -331,6 +386,7 @@ async function boot(){
     if(!session){
       state.config=null; state.entries=[]; state.proyecciones=[]; state.cardPayments=[];
       state.showCardForm=false; state.cardDraft=null; state.expandedCard=null; state.tab='hoy';
+      state.monthlySummaries=[]; state.showInvestmentForm=false; state.investmentDraft=null; state.expandedSummary=null;
       render();
     }
   });
@@ -345,9 +401,7 @@ function loadLocalData(){
     const c = localStorage.getItem('panel_config');
     state.config = c ? JSON.parse(c) : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
   }catch(e){ state.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
-  if(!state.config.debt) state.config.debt = { cards: [] };
-  state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
-  if(typeof state.config.apoyoVariable !== 'number') state.config.apoyoVariable = 0;
+  normalizeConfig(state.config);
   try{
     const e = localStorage.getItem('panel_entries');
     state.entries = e ? JSON.parse(e) : [];
@@ -360,6 +414,10 @@ function loadLocalData(){
     const cp = localStorage.getItem('panel_card_payments');
     state.cardPayments = cp ? JSON.parse(cp) : [];
   }catch(e){ state.cardPayments = []; }
+  try{
+    const ms = localStorage.getItem('panel_monthly_summaries');
+    state.monthlySummaries = ms ? JSON.parse(ms) : [];
+  }catch(e){ state.monthlySummaries = []; }
 }
 async function persistEntriesLocal(){
   try{ localStorage.setItem('panel_entries', JSON.stringify(state.entries)); }catch(e){ showToast('No se pudo guardar'); }
@@ -370,11 +428,18 @@ async function persistProjectionsLocal(){
 async function persistCardPaymentsLocal(){
   try{ localStorage.setItem('panel_card_payments', JSON.stringify(state.cardPayments)); }catch(e){ showToast('No se pudo guardar'); }
 }
+async function persistMonthlySummariesLocal(){
+  try{ localStorage.setItem('panel_monthly_summaries', JSON.stringify(state.monthlySummaries)); }catch(e){ showToast('No se pudo guardar'); }
+}
 
 /* ---------- persistencia (nube si hay sesión, si no local) ---------- */
 async function addEntryPersist(entry){
   if(isCloud()){
-    const { error } = await supa.from('entries').insert({ ...entry, user_id: state.session.user.id });
+    const { error } = await supa.from('entries').insert({
+      id: entry.id, user_id: state.session.user.id, type: entry.type, category: entry.category,
+      amount: entry.amount, note: entry.note, date: entry.date,
+      subtype: entry.subtype || null, meta_nombre: entry.metaNombre || null, fuente: entry.fuente || null,
+    });
     if(error) return false;
     state.entries.push(entry);
   } else {
@@ -433,6 +498,18 @@ async function addCardPaymentPersist(payment){
   }
   return true;
 }
+async function addMonthlySummaryPersist(summary){
+  if(isCloud()){
+    const { error } = await supa.from('monthly_summaries').upsert({
+      id: summary.id, user_id: state.session.user.id, month: summary.month, data: summary,
+    }, { onConflict: 'user_id,month' });
+    if(error) return false;
+  }
+  state.monthlySummaries = state.monthlySummaries.filter(s=>s.month!==summary.month);
+  state.monthlySummaries.push(summary);
+  if(!isCloud()) await persistMonthlySummariesLocal();
+  return true;
+}
 
 async function initUserData(){
   document.getElementById('app').innerHTML = `<div class="empty-state" style="padding-top:60px;">Cargando tu información…</div>`;
@@ -443,6 +520,7 @@ async function initUserData(){
       loadEntriesFromSupabase(userId),
       loadProyeccionesFromSupabase(userId),
       loadCardPaymentsFromSupabase(userId),
+      loadMonthlySummariesFromSupabase(userId),
     ]);
   }catch(e){
     document.getElementById('app').innerHTML = `<div class="wrap" style="padding-top:60px;"><div class="card"><div class="empty-state">No se pudo cargar tu información. Revisa tu conexión y recarga la página.</div></div></div>`;
@@ -454,18 +532,21 @@ async function initUserData(){
 }
 
 async function loadConfigFromSupabase(userId){
-  const [{ data: profile }, { data: fx }, { data: debts }] = await Promise.all([
+  const [{ data: profile }, { data: fx }, { data: debts }, { data: investments }] = await Promise.all([
     supa.from('profiles').select('*').eq('id', userId).maybeSingle(),
     supa.from('fixed_expenses').select('*').eq('user_id', userId).order('sort_order'),
     supa.from('debts').select('*').eq('user_id', userId),
+    supa.from('investments').select('*').eq('user_id', userId),
   ]);
-  state.config = {
+  state.config = normalizeConfig({
     ingresoFijo: profile ? Number(profile.ingreso_fijo) : DEFAULT_CONFIG.ingresoFijo,
     apoyoVariable: profile ? Number(profile.apoyo_variable) : DEFAULT_CONFIG.apoyoVariable,
+    metaFondoEmergenciaMeses: profile && profile.meta_emergencia_meses!=null ? Number(profile.meta_emergencia_meses) : DEFAULT_CONFIG.metaFondoEmergenciaMeses,
     allocPct: {
       ahorro: profile ? Number(profile.alloc_ahorro) : DEFAULT_CONFIG.allocPct.ahorro,
       estiloVida: profile ? Number(profile.alloc_estilo) : DEFAULT_CONFIG.allocPct.estiloVida,
       diversion: profile ? Number(profile.alloc_diversion) : DEFAULT_CONFIG.allocPct.diversion,
+      emergenciaPctOfAhorro: profile && profile.emergencia_pct_of_ahorro!=null ? Number(profile.emergencia_pct_of_ahorro) : DEFAULT_CONFIG.allocPct.emergenciaPctOfAhorro,
     },
     fixedExpenses: (fx && fx.length)
       ? fx.map(r=>({ id:r.id, name:r.name, icon:r.icon, monthly:Number(r.monthly) }))
@@ -479,11 +560,18 @@ async function loadConfigFromSupabase(userId){
           }))
         : JSON.parse(JSON.stringify(DEFAULT_CONFIG.debt.cards)),
     },
-  };
+    investments: (investments||[]).map(r=>normalizeInvestment({
+      id:r.id, name:r.name, type:r.type, montoInicial:r.monto_inicial,
+      aportacionMensual:r.aportacion_mensual, tasaAnualEstimada:r.tasa_anual_estimada, fechaInicio:r.fecha_inicio,
+    })),
+  });
 }
 async function loadEntriesFromSupabase(userId){
   const { data } = await supa.from('entries').select('*').eq('user_id', userId).order('date', { ascending:false });
-  state.entries = (data||[]).map(r=>({ id:r.id, type:r.type, category:r.category, amount:Number(r.amount), note:r.note||'', date:r.date }));
+  state.entries = (data||[]).map(r=>({
+    id:r.id, type:r.type, category:r.category, amount:Number(r.amount), note:r.note||'', date:r.date,
+    subtype: r.subtype || null, metaNombre: r.meta_nombre || '', fuente: r.fuente || null,
+  }));
 }
 async function loadProyeccionesFromSupabase(userId){
   const { data } = await supa.from('projections').select('*').eq('user_id', userId).order('target_month');
@@ -492,6 +580,10 @@ async function loadProyeccionesFromSupabase(userId){
 async function loadCardPaymentsFromSupabase(userId){
   const { data } = await supa.from('card_payments').select('*').eq('user_id', userId).order('date', { ascending:false });
   state.cardPayments = (data||[]).map(r=>({ id:r.id, cardId:r.card_id, amount:Number(r.amount), date:r.date, note:r.note||'' }));
+}
+async function loadMonthlySummariesFromSupabase(userId){
+  const { data } = await supa.from('monthly_summaries').select('*').eq('user_id', userId).order('month', { ascending:false });
+  state.monthlySummaries = (data||[]).map(r=>r.data);
 }
 
 async function saveConfig(){
@@ -511,6 +603,8 @@ async function saveConfig(){
       alloc_ahorro: cfg.allocPct.ahorro,
       alloc_estilo: cfg.allocPct.estiloVida,
       alloc_diversion: cfg.allocPct.diversion,
+      emergencia_pct_of_ahorro: cfg.allocPct.emergenciaPctOfAhorro,
+      meta_emergencia_meses: cfg.metaFondoEmergenciaMeses,
       updated_at: new Date().toISOString(),
     }));
     if(error) throw error;
@@ -537,6 +631,19 @@ async function saveConfig(){
       ));
       if(error) throw error;
     }
+
+    ({ error } = await supa.from('investments').delete().eq('user_id', userId));
+    if(error) throw error;
+    if(cfg.investments.length){
+      ({ error } = await supa.from('investments').insert(
+        cfg.investments.map(i=>({
+          id:i.id, user_id:userId, name:i.name, type:i.type||null,
+          monto_inicial:i.montoInicial, aportacion_mensual:i.aportacionMensual,
+          tasa_anual_estimada:i.tasaAnualEstimada, fecha_inicio:i.fechaInicio,
+        }))
+      ));
+      if(error) throw error;
+    }
   }catch(e){ showToast('No se pudo guardar en la nube'); }
 }
 
@@ -554,13 +661,11 @@ async function importLocalData(){
   const userId = state.session.user.id;
   const { config, entries, proyecciones } = state.localImport;
   if(config){
-    state.config = config;
-    if(!state.config.debt) state.config.debt = {cards:[]};
-    state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
+    state.config = normalizeConfig(config);
   }
   await saveConfig();
   if(entries.length){
-    const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
+    const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null })));
     if(!error) state.entries = entries;
   }
   if(proyecciones.length){
@@ -590,13 +695,15 @@ function inRange(dateStr, start, end){
   const t = new Date(dateStr+'T12:00:00').getTime();
   return t >= start.getTime() && t <= end.getTime();
 }
-function monthEntries(catId, type){
-  const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth();
+function entriesForMonth(y, m, catId, type){
   return state.entries.filter(e=>{
     const d = new Date(e.date+'T12:00:00');
     return d.getFullYear()===y && d.getMonth()===m && (!type || e.type===type) && (!catId || e.category===catId);
   });
+}
+function monthEntries(catId, type){
+  const now = new Date();
+  return entriesForMonth(now.getFullYear(), now.getMonth(), catId, type);
 }
 function weekEntries(catId, type){
   const now = new Date(); const s = startOfWeek(now), e = endOfWeek(now);
@@ -685,6 +792,15 @@ function computeAlerts(){
     }
   });
 
+  // Recordatorio: ya pasó el mes y no se ha cerrado en Historial
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
+  const prevMonthKey = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth()+1).padStart(2,'0')}`;
+  const yaCerrado = state.monthlySummaries.some(s=>s.month===prevMonthKey);
+  const huboMovimientosMesAnterior = entriesForMonth(prevMonthDate.getFullYear(), prevMonthDate.getMonth()).length>0;
+  if(now.getDate()>=2 && !yaCerrado && huboMovimientosMesAnterior){
+    alerts.push({level:'warn', text:`Ya pasó ${MESES[prevMonthDate.getMonth()]} y no lo has cerrado — ve a Historial → Cierres mensuales para guardar el resumen y el diagnóstico de ese mes.`});
+  }
+
   return alerts;
 }
 
@@ -753,14 +869,37 @@ function buildFinancialContext(){
   const estiloSpent = sum(cfg.fixedExpenses.map(c=>({amount: sum(monthEntries(c.id,'gasto'))})));
   const divSpent = sum(monthEntries('diversion','gasto'));
   const debt = cfg.debt || { cards: [] };
+  const nw = computeNetWorth();
+  const ah = computeAhorroSplit(cfg);
+  const now = new Date();
+  const ingresoMesActual = computeIngresosMonth(now.getFullYear(), now.getMonth()).total;
+  const ultimos3 = [1,2,3].map(i=>{ const d=new Date(now.getFullYear(), now.getMonth()-i, 1); return computeIngresosMonth(d.getFullYear(), d.getMonth()).total; });
+  const promedioIngreso3Meses = ultimos3.reduce((a,b)=>a+b,0)/3;
 
   return {
     fecha: todayISO(),
     ingresoFijoMensual: cfg.ingresoFijo,
     apoyoVariableMensual: cfg.apoyoVariable,
+    ingresoRealEsteMes: ingresoMesActual,
+    promedioIngresoUltimos3Meses: Math.round(promedioIngreso3Meses),
     distribucionPct: cfg.allocPct,
     metasDelMes: { ahorro: ahorroM, estiloVida: estiloM, diversion: divM },
     gastadoEsteMes: { ahorro: ahorroSaved, estiloVida: estiloSpent, diversion: divSpent },
+    ahorroFondoEmergencia: {
+      acumuladoTotal: ah.emergenciaAcumuladoTotal,
+      mesesDeGastosFijosQueCubre: Math.round(ah.mesesCubiertos*10)/10,
+      metaMeses: ah.metaMeses,
+    },
+    patrimonioNeto: {
+      total: nw.patrimonioNeto,
+      ahorroAcumulado: nw.ahorroAcumuladoTotal,
+      valorInversiones: nw.valorInversiones,
+      deudaTotal: nw.deudaTotal,
+    },
+    inversiones: (cfg.investments||[]).map(inv=>({
+      nombre: inv.name, tipo: inv.type||null, valorEstimadoActual: Math.round(estimateInvestmentValue(inv)),
+      tasaAnualEstimadaPct: inv.tasaAnualEstimada, aportacionMensual: inv.aportacionMensual,
+    })),
     gastosFijos: cfg.fixedExpenses.map(c=>({ nombre:c.name, presupuestoMensual:c.monthly, gastadoEsteMes: sum(monthEntries(c.id,'gasto')) })),
     deudas: debt.cards.map(c=>{
       const sim = simulatePayoff(c);
@@ -817,6 +956,7 @@ function render(){
   else if(state.tab==='registrar') body = renderRegistrar();
   else if(state.tab==='proyectar') body = renderProyectar();
   else if(state.tab==='tarjetas') body = renderTarjetas();
+  else if(state.tab==='inversion') body = renderInversion();
   else if(state.tab==='historial') body = renderHistorial();
   else if(state.tab==='ajustes') body = renderAjustes();
 
@@ -955,17 +1095,178 @@ function simulatePayoff(card){
   return { months, totalInterest, neverPaysOff:false };
 }
 
+function computeNetWorth(){
+  const cfg = state.config;
+  const ahorroAcumuladoTotal = sum(state.entries.filter(e=>e.type==='ahorro'));
+  const deudaTotal = sum((cfg.debt.cards||[]).map(c=>({amount:c.saldo})));
+  const valorInversiones = sum((cfg.investments||[]).map(inv=>({amount: estimateInvestmentValue(inv)})));
+  const patrimonioNeto = ahorroAcumuladoTotal + valorInversiones - deudaTotal;
+  return { ahorroAcumuladoTotal, deudaTotal, valorInversiones, patrimonioNeto };
+}
+function computeAhorroSplit(cfg){
+  const ahorroM = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
+  const emergenciaPct = cfg.allocPct.emergenciaPctOfAhorro!=null ? cfg.allocPct.emergenciaPctOfAhorro : 50;
+  const emergenciaMetaMensual = ahorroM * (emergenciaPct/100);
+  const propositoMetaMensual = ahorroM - emergenciaMetaMensual;
+  const thisMonthAhorro = monthEntries(null,'ahorro');
+  const emergenciaSavedMonth = sum(thisMonthAhorro.filter(e=>e.subtype==='emergencia'));
+  const propositoSavedMonth = sum(thisMonthAhorro.filter(e=>e.subtype==='proposito'));
+  const sinSubtypeMonth = sum(thisMonthAhorro.filter(e=>!e.subtype));
+  const emergenciaAcumuladoTotal = sum(state.entries.filter(e=>e.type==='ahorro' && e.subtype==='emergencia'));
+  const fixedTotal = sum(cfg.fixedExpenses.map(c=>({amount:c.monthly})));
+  const mesesCubiertos = fixedTotal>0 ? emergenciaAcumuladoTotal/fixedTotal : 0;
+  return {
+    emergenciaMetaMensual, propositoMetaMensual, emergenciaSavedMonth, propositoSavedMonth,
+    sinSubtypeMonth, emergenciaAcumuladoTotal, mesesCubiertos,
+    metaMeses: cfg.metaFondoEmergenciaMeses||3,
+  };
+}
+
+function computeIngresosMonth(y, m){
+  const ingresos = entriesForMonth(y, m, null, 'ingreso');
+  const total = sum(ingresos);
+  const porFuente = {};
+  FUENTES_INGRESO.forEach(f=> porFuente[f.id] = 0);
+  ingresos.forEach(e=>{
+    const f = e.fuente || 'otro';
+    porFuente[f] = (porFuente[f]||0) + Number(e.amount||0);
+  });
+  return { total, porFuente };
+}
+function computeMonthClose(y, m){
+  const cfg = state.config;
+  const gastos = entriesForMonth(y, m, null, 'gasto');
+  const ingresos = entriesForMonth(y, m, null, 'ingreso');
+  const ahorros = entriesForMonth(y, m, null, 'ahorro');
+
+  const ingresoReal = sum(ingresos);
+  const ingresoConfigurado = cfg.ingresoFijo + cfg.apoyoVariable;
+
+  const gastoPorCategoria = {};
+  cfg.fixedExpenses.forEach(fx=>{ gastoPorCategoria[fx.id] = 0; });
+  gastoPorCategoria.diversion = 0;
+  gastoPorCategoria.otro = 0;
+  gastos.forEach(e=>{
+    const cat = e.category || 'otro';
+    gastoPorCategoria[cat] = (gastoPorCategoria[cat]||0) + Number(e.amount||0);
+  });
+  const gastoTotal = sum(gastos);
+
+  const ahorroReal = {
+    emergencia: sum(ahorros.filter(e=>e.subtype==='emergencia')),
+    proposito: sum(ahorros.filter(e=>e.subtype==='proposito')),
+    sinSubtype: sum(ahorros.filter(e=>!e.subtype)),
+  };
+  const ahorroMeta = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
+
+  const cards = cfg.debt.cards||[];
+  const interesPagadoTotal = cards.reduce((a,c)=> a + (c.saldo>0 ? c.saldo*(c.tasaMensual/100) : 0), 0);
+  const abonoInsuficiente = cards
+    .filter(c=> c.saldo>0 && c.tasaMensual>0 && c.abonoMensual>0 && c.abonoMensual <= c.saldo*(c.tasaMensual/100))
+    .map(c=>c.name);
+
+  const deudaTotalFin = sum(cards.map(c=>({amount:c.saldo})));
+  const pagosDelMes = state.cardPayments.filter(p=>{
+    const d = new Date(p.date+'T12:00:00');
+    return d.getFullYear()===y && d.getMonth()===m;
+  });
+  // deudaTotalInicio es la mejor estimación posible sin llevar snapshot diario de
+  // saldo: el saldo de hoy más lo que ya se abonó este mes (así se acerca al saldo
+  // que había al empezar el mes).
+  const deudaTotalInicio = deudaTotalFin + sum(pagosDelMes);
+
+  const valorInversionesFin = sum((cfg.investments||[]).map(inv=>({amount: estimateInvestmentValue(inv)})));
+  const ahorroAcumuladoFin = sum(state.entries.filter(e=>e.type==='ahorro'));
+  const patrimonioNeto = ahorroAcumuladoFin + valorInversionesFin - deudaTotalFin;
+
+  return {
+    id: 'ms'+uid(),
+    month: `${y}-${String(m+1).padStart(2,'0')}`,
+    ingresoReal, ingresoConfigurado,
+    gastoTotal, gastoPorCategoria,
+    ahorroReal, ahorroMeta,
+    interesPagadoTotal: Math.round(interesPagadoTotal),
+    abonoInsuficiente,
+    deudaTotalInicio, deudaTotalFin,
+    valorInversionesFin,
+    patrimonioNeto,
+    diagnostico: '',
+  };
+}
+function generateDiagnostico(summary, prevSummary){
+  const cfg = state.config;
+  const lines = [];
+
+  let peor = null, peorExceso = 0;
+  cfg.fixedExpenses.forEach(fx=>{
+    const gastado = summary.gastoPorCategoria[fx.id]||0;
+    const exceso = gastado - fx.monthly;
+    if(exceso > peorExceso){ peorExceso = exceso; peor = fx.name; }
+  });
+  if(peor){
+    lines.push(`${peor} fue la categoría que más se salió de presupuesto, por ${fmt(peorExceso)}.`);
+  }
+
+  const cerrados = [...state.monthlySummaries]
+    .filter(s=>s.month < summary.month)
+    .sort((a,b)=>b.month.localeCompare(a.month))
+    .slice(0,3);
+  if(cerrados.length){
+    const promedioDiv = cerrados.reduce((a,s)=> a + (s.gastoPorCategoria.diversion||0), 0) / cerrados.length;
+    const divActual = summary.gastoPorCategoria.diversion||0;
+    if(promedioDiv>0 && Math.abs(divActual-promedioDiv) > promedioDiv*0.15){
+      const diff = divActual - promedioDiv;
+      lines.push(diff>0
+        ? `Gastaste ${fmt(diff)} más en Diversión que tu promedio de los últimos ${cerrados.length} meses cerrados.`
+        : `Gastaste ${fmt(-diff)} menos en Diversión que tu promedio de los últimos ${cerrados.length} meses cerrados.`);
+    }
+  }
+
+  if(summary.abonoInsuficiente.length){
+    lines.push(`El abono a ${summary.abonoInsuficiente.join(', ')} no cubrió el interés generado este mes — el saldo no bajó por eso.`);
+  }
+
+  if(prevSummary){
+    const diff = summary.patrimonioNeto - prevSummary.patrimonioNeto;
+    if(Math.abs(diff) < 1){
+      lines.push('Tu patrimonio neto se mantuvo prácticamente igual que el mes pasado.');
+    } else {
+      const ahorroDelta = summary.ahorroReal.emergencia + summary.ahorroReal.proposito + summary.ahorroReal.sinSubtype;
+      const deudaDelta = prevSummary.deudaTotalFin - summary.deudaTotalFin;
+      const invDelta = summary.valorInversionesFin - prevSummary.valorInversionesFin;
+      const mayor = [
+        { label:'el ahorro del mes', val: ahorroDelta },
+        { label:'bajar tu deuda', val: deudaDelta },
+        { label:'el rendimiento de tus inversiones', val: invDelta },
+      ].sort((a,b)=>Math.abs(b.val)-Math.abs(a.val))[0];
+      lines.push(diff>0
+        ? `Tu patrimonio neto subió ${fmt(diff)} vs el mes pasado, sobre todo por ${mayor.label}.`
+        : `Tu patrimonio neto bajó ${fmt(-diff)} vs el mes pasado — lo que más pesó fue ${mayor.label}.`);
+    }
+  }
+
+  return lines.length ? lines.join(' ') : 'Mes sin nada fuera de lo normal — vas dentro de lo planeado.';
+}
+
+function last6MonthsIncome(){
+  const now = new Date();
+  const months = [];
+  for(let i=5;i>=0;i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    const info = computeIngresosMonth(d.getFullYear(), d.getMonth());
+    months.push({ y:d.getFullYear(), m:d.getMonth(), label: MESES[d.getMonth()].slice(0,3), total: info.total });
+  }
+  return months;
+}
+
 function renderHoy(){
   const cfg = state.config;
   const now = new Date();
   const dim = daysInMonth(now);
   const dayFrac = now.getDate()/dim;
 
-  const ahorroM = cfg.ingresoFijo*(cfg.allocPct.ahorro/100);
   const estiloM = cfg.ingresoFijo*(cfg.allocPct.estiloVida/100);
   const divM = cfg.ingresoFijo*(cfg.allocPct.diversion/100);
-
-  const ahorroSaved = sum(monthEntries(null,'ahorro'));
   const estiloSpent = sum(cfg.fixedExpenses.map(c=>({amount: sum(monthEntries(c.id,'gasto'))})));
   const divSpent = sum(monthEntries('diversion','gasto'));
 
@@ -974,13 +1275,44 @@ function renderHoy(){
     ? alerts.map(a=>`<div class="alert ${a.level}"><div class="dot"></div><div>${a.text}</div></div>`).join('')
     : `<div class="alert-empty">Sin alertas por ahora — vas dentro de lo planeado. ✓</div>`;
 
-  const dials = `
-    <div class="dials">
-      <div class="dial">
-        ${arcGauge(ahorroM? ahorroSaved/ahorroM:0, pctColorVar(ahorroM? ahorroSaved/ahorroM:0))}
-        <div class="label">Ahorro</div>
-        <div class="amt num">${fmt(ahorroSaved)} <span class="of">/ ${fmt(ahorroM)}</span></div>
+  const nw = computeNetWorth();
+  const netWorthCard = `
+    <div class="card">
+      <h2>Patrimonio neto</h2>
+      <div class="amt num" style="font-size:28px;${nw.patrimonioNeto<0?'color:var(--danger);':''}">${fmt(nw.patrimonioNeto)}</div>
+      <div class="card-tile-meta" style="margin-top:10px;">
+        <span>Ahorro acumulado: <b class="num" style="color:var(--text);">${fmt(nw.ahorroAcumuladoTotal)}</b></span>
+        <span>Inversión: <b class="num" style="color:var(--text);">${fmt(nw.valorInversiones)}</b></span>
+        <span>Deuda: <b class="num" style="color:var(--danger);">-${fmt(nw.deudaTotal)}</b></span>
       </div>
+    </div>`;
+
+  const ah = computeAhorroSplit(cfg);
+  const emergPct = ah.emergenciaMetaMensual? ah.emergenciaSavedMonth/ah.emergenciaMetaMensual : 0;
+  const propoPct = ah.propositoMetaMensual? ah.propositoSavedMonth/ah.propositoMetaMensual : 0;
+  const ahorroSplitCard = `
+    <div class="card">
+      <h2>Ahorro — emergencia vs propósito</h2>
+      <div class="fuelrow">
+        <div class="top">
+          <div class="name">🛟 Fondo de emergencia</div>
+          <div class="figs"><b class="num">${fmt(ah.emergenciaSavedMonth)}</b> / ${fmt(Math.round(ah.emergenciaMetaMensual))} este mes</div>
+        </div>
+        <div class="track"><div class="fill ${pctClass(emergPct)}" style="width:${Math.min(emergPct*100,100)}%"></div></div>
+        <div class="meta" style="font-size:11px;color:var(--muted);margin-top:4px;">Acumulado ${fmt(ah.emergenciaAcumuladoTotal)} — cubre ${ah.mesesCubiertos.toFixed(1)} de tus ${ah.metaMeses} meses meta de gastos fijos.</div>
+      </div>
+      <div class="fuelrow" style="margin-bottom:0;margin-top:14px;">
+        <div class="top">
+          <div class="name">🎯 Con propósito</div>
+          <div class="figs"><b class="num">${fmt(ah.propositoSavedMonth)}</b> / ${fmt(Math.round(ah.propositoMetaMensual))} este mes</div>
+        </div>
+        <div class="track"><div class="fill ${pctClass(propoPct)}" style="width:${Math.min(propoPct*100,100)}%"></div></div>
+      </div>
+      ${ah.sinSubtypeMonth>0 ? `<div class="setup-note" style="margin:10px 0 0;">${fmt(ah.sinSubtypeMonth)} de ahorro este mes sin subtipo asignado (movimientos de antes de este cambio) — no cuenta en ninguna barra de arriba.</div>` : ''}
+    </div>`;
+
+  const dials = `
+    <div class="dials" style="grid-template-columns:repeat(2,1fr);">
       <div class="dial">
         ${arcGauge(estiloM? estiloSpent/estiloM:0, pctColorVar(estiloM? estiloSpent/estiloM:0))}
         <div class="label">Estilo de vida</div>
@@ -1015,10 +1347,12 @@ function renderHoy(){
   }).join('');
 
   return `
+    ${netWorthCard}
     <div class="card">
       <h2>Alertas</h2>
       ${alertsHtml}
     </div>
+    ${ahorroSplitCard}
     <div class="card">
       <h2>Distribución del mes (${fmt(cfg.ingresoFijo)} fijos)</h2>
       ${dials}
@@ -1041,9 +1375,23 @@ function renderHoy(){
   `;
 }
 
+const FUENTES_INGRESO = [
+  { id:'nomina', label:'Nómina' },
+  { id:'freelance', label:'Freelance' },
+  { id:'apoyo_variable', label:'Apoyo variable' },
+  { id:'renta', label:'Renta' },
+  { id:'otro', label:'Otro' },
+];
+function fuenteLabel(id){
+  const f = FUENTES_INGRESO.find(x=>x.id===id);
+  return f ? f.label : 'Otro';
+}
+
 function renderRegistrar(){
   const d = state.entryDraft;
   const showCategory = d.type==='gasto';
+  const showFuente = d.type==='ingreso';
+  const showAhorroSub = d.type==='ahorro';
 
   return `
     <div class="card">
@@ -1060,6 +1408,21 @@ function renderRegistrar(){
       ${showCategory? `
       <label>Categoría</label>
       <select id="f-cat">${categoryOptionsHtml(d.category)}</select>` : ''}
+
+      ${showFuente? `
+      <label>Fuente</label>
+      <select id="f-fuente">${FUENTES_INGRESO.map(f=>`<option value="${f.id}" ${d.fuente===f.id?'selected':''}>${f.label}</option>`).join('')}</select>` : ''}
+
+      ${showAhorroSub? `
+      <label>¿Para qué es este ahorro?</label>
+      <div class="seg" id="ahorro-sub-seg">
+        <button data-subtype="emergencia" class="${d.subtype==='emergencia'?'active':''}">Fondo de emergencia</button>
+        <button data-subtype="proposito" class="${d.subtype==='proposito'?'active':''}">Con propósito</button>
+      </div>
+      ${d.subtype==='proposito' ? `
+      <label>Meta (opcional)</label>
+      <input type="text" id="f-meta-nombre" placeholder="ej. Viaje, enganche, etc." value="${escapeHtml(d.metaNombre||'')}">` : ''}
+      ` : ''}
 
       <label>Monto (MXN)</label>
       <input type="number" inputmode="decimal" id="f-amount" placeholder="0" value="${d.amount}">
@@ -1226,6 +1589,24 @@ function renderCardForm(){
     </div>`;
 }
 
+function computeWhatIf(card, extra){
+  const baseline = simulatePayoff(card);
+  const hipotetico = simulatePayoff({ ...card, abonoMensual: (card.abonoMensual||0) + extra });
+  return { baseline, hipotetico };
+}
+function renderWhatIfResult(r){
+  const { baseline, hipotetico } = r;
+  if(hipotetico.neverPaysOff){
+    return `<div class="setup-note" style="margin-top:8px;margin-bottom:0;">Con ese abono extra, tu abono sigue sin cubrir el interés — necesitas más para que baje el saldo.</div>`;
+  }
+  if(baseline.neverPaysOff){
+    return `<div class="proj-explain" style="margin-top:8px;color:var(--ok);">Con ese abono extra sí la liquidas: ${hipotetico.months} mes${hipotetico.months===1?'':'es'}, pagando ~${fmt(hipotetico.totalInterest)} de interés (hoy nunca se liquidaría con tu abono actual).</div>`;
+  }
+  const monthsSaved = baseline.months - hipotetico.months;
+  const interestSaved = baseline.totalInterest - hipotetico.totalInterest;
+  return `<div class="proj-explain" style="margin-top:8px;color:var(--ok);">Terminarías ${monthsSaved} mes${monthsSaved===1?'':'es'} antes y te ahorrarías ~${fmt(interestSaved)} de interés.</div>`;
+}
+
 function renderCardTile(c){
   const util = c.limite>0 ? c.saldo/c.limite : null;
   const proximoCorte = nextOccurrenceOfDay(c.corteDia);
@@ -1299,6 +1680,122 @@ function renderCardTile(c){
             <div class="amt ahorro">${fmt(p.amount)}</div>
           </div>`).join('') : `<div class="empty-state" style="padding:10px 0;">Sin pagos registrados todavía.</div>`}
       ` : ''}
+
+      ${c.saldo>0 ? `
+      <div class="divider"></div>
+      <div class="small-label">¿Y si pago extra cada mes?</div>
+      <div class="card-tile-pay">
+        <input type="number" inputmode="decimal" placeholder="Abono extra al mes" id="whatif-amount-${c.id}" value="${(state.cardWhatIf[c.id]&&state.cardWhatIf[c.id].extra)||''}">
+        <button class="btn-ghost" data-whatif-card="${c.id}">Calcular</button>
+      </div>
+      ${state.cardWhatIf[c.id] && state.cardWhatIf[c.id].result ? renderWhatIfResult(state.cardWhatIf[c.id].result) : ''}
+      ` : ''}
+    </div>`;
+}
+
+function investmentTotals(inv){
+  const months = investmentMonthsElapsed(inv);
+  const totalAportado = (inv.montoInicial||0) + (inv.aportacionMensual||0)*months;
+  const valorActual = estimateInvestmentValue(inv);
+  const rendimiento = valorActual - totalAportado;
+  return { months, totalAportado, valorActual, rendimiento };
+}
+
+function renderInversion(){
+  const cfg = state.config;
+  const invs = cfg.investments || [];
+  let totalAportadoAll = 0, valorActualAll = 0;
+  invs.forEach(inv=>{
+    const t = investmentTotals(inv);
+    totalAportadoAll += t.totalAportado;
+    valorActualAll += t.valorActual;
+  });
+  const rendimientoAll = valorActualAll - totalAportadoAll;
+
+  const summary = `
+    <div class="card">
+      <h2>Resumen de inversión</h2>
+      <div class="dials" style="grid-template-columns:repeat(3,1fr);">
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;">${fmt(totalAportadoAll)}</div>
+          <div class="label">Total aportado</div>
+        </div>
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;">${fmt(valorActualAll)}</div>
+          <div class="label">Valor estimado</div>
+        </div>
+        <div class="dial">
+          <div class="amt num" style="font-size:18px;color:${rendimientoAll>=0?'var(--ok)':'var(--danger)'};">${rendimientoAll>=0?'+':''}${fmt(rendimientoAll)}</div>
+          <div class="label">Rendimiento est.</div>
+        </div>
+      </div>
+      <div class="setup-note" style="margin:14px 0 0;">Estimación con interés compuesto simple sobre la tasa anual que capturaste — no considera comisiones, impuestos ni que la tasa real varíe mes a mes.</div>
+    </div>`;
+
+  const tiles = invs.length
+    ? invs.map(inv=>renderInvestmentTile(inv)).join('')
+    : `<div class="empty-state">Todavía no agregas ninguna inversión.</div>`;
+
+  return `
+    ${summary}
+    <div class="card">
+      <h2>Tus inversiones</h2>
+      ${tiles}
+      ${!state.showInvestmentForm ? `<button class="btn-ghost" id="inv-add-open">+ Agregar inversión</button>` : ''}
+    </div>
+    ${state.showInvestmentForm ? renderInvestmentForm() : ''}
+  `;
+}
+
+function renderInvestmentForm(){
+  const d = state.investmentDraft;
+  return `
+    <div class="card">
+      <h2>${d.editingId ? 'Editar inversión' : 'Nueva inversión'}</h2>
+      <div class="split">
+        <div><label>Nombre</label><input type="text" id="i-name" value="${escapeHtml(d.name)}" placeholder="ej. CETES 28 días"></div>
+        <div><label>Tipo (opcional)</label><input type="text" id="i-type" value="${escapeHtml(d.type)}" placeholder="ej. CETES, fondo indexado"></div>
+      </div>
+      <div class="split">
+        <div><label>Monto inicial</label><input type="number" id="i-monto" value="${d.montoInicial}"></div>
+        <div><label>Aportación mensual</label><input type="number" id="i-aportacion" value="${d.aportacionMensual}"></div>
+      </div>
+      <div class="split">
+        <div><label>Tasa anual estimada %</label><input type="number" step="0.1" id="i-tasa" value="${d.tasaAnualEstimada}"></div>
+        <div><label>Fecha de inicio</label><input type="date" id="i-fecha" value="${d.fechaInicio}"></div>
+      </div>
+      <button class="btn-primary" id="inv-save">${d.editingId ? 'Guardar cambios' : 'Agregar inversión'}</button>
+      <button class="btn-ghost" id="inv-cancel">Cancelar</button>
+    </div>`;
+}
+
+function renderInvestmentTile(inv){
+  const t = investmentTotals(inv);
+  const proy12 = estimateInvestmentValue(inv, 12);
+  const proy24 = estimateInvestmentValue(inv, 24);
+  const proy60 = estimateInvestmentValue(inv, 60);
+  return `
+    <div class="card-tile">
+      <div class="card-tile-top">
+        <div>
+          <div class="card-tile-name">${escapeHtml(inv.name)}</div>
+          ${inv.type ? `<div class="card-tile-bank">${escapeHtml(inv.type)}</div>` : ''}
+        </div>
+        <div style="text-align:right;">
+          <div class="amt num" style="font-size:16px;">${fmt(t.valorActual)}</div>
+          <div class="meta" style="font-size:11px;color:${t.rendimiento>=0?'var(--ok)':'var(--danger)'};">${t.rendimiento>=0?'+':''}${fmt(t.rendimiento)} vs aportado</div>
+        </div>
+      </div>
+      <div class="card-tile-meta">
+        <span>Aportado: ${fmt(t.totalAportado)}</span>
+        <span>Tasa: ${inv.tasaAnualEstimada}% anual</span>
+        <span>Aportación: ${fmt(inv.aportacionMensual)}/mes</span>
+      </div>
+      <div class="proj-explain" style="margin-top:8px;">Proyección: ${fmt(proy12)} en 12 meses · ${fmt(proy24)} en 24 meses · ${fmt(proy60)} en 60 meses.</div>
+      <div class="proj-actions">
+        <button class="btn-ghost" data-inv-edit="${inv.id}">Editar</button>
+        <button class="btn-ghost" data-inv-del="${inv.id}" style="color:var(--danger);">Eliminar</button>
+      </div>
     </div>`;
 }
 
@@ -1310,6 +1807,81 @@ function toCSV(){
   return rows.map(r=>r.join(',')).join('\n');
 }
 
+function renderIngresos(){
+  const cfg = state.config;
+  const now = new Date();
+  const ingresoMes = computeIngresosMonth(now.getFullYear(), now.getMonth());
+  const ingresoConfigurado = cfg.ingresoFijo + cfg.apoyoVariable;
+  const pctVsConfig = ingresoConfigurado ? ingresoMes.total/ingresoConfigurado : 0;
+  const meses6 = last6MonthsIncome();
+  const maxMes = Math.max(...meses6.map(m=>m.total), 1);
+  const desglose = FUENTES_INGRESO.filter(f=>ingresoMes.porFuente[f.id]>0);
+
+  return `
+    <div class="card">
+      <h2>Ingresos</h2>
+      <div class="fuelrow">
+        <div class="top">
+          <div class="name">Este mes: real vs configurado</div>
+          <div class="figs"><b class="num">${fmt(ingresoMes.total)}</b> / ${fmt(ingresoConfigurado)}</div>
+        </div>
+        <div class="track"><div class="fill ${pctClass(pctVsConfig)}" style="width:${Math.min(pctVsConfig*100,100)}%"></div></div>
+      </div>
+      <div class="small-label" style="margin-top:14px;">Desglose por fuente este mes</div>
+      ${desglose.length ? desglose.map(f=>`
+        <div class="hist-item">
+          <div>${f.label}</div>
+          <div class="amt ingreso">${fmt(ingresoMes.porFuente[f.id])}</div>
+        </div>`).join('') : `<div class="empty-state" style="padding:10px 0;">Sin ingresos registrados este mes.</div>`}
+      <div class="small-label" style="margin-top:14px;">Últimos 6 meses</div>
+      ${meses6.map(m=>`
+        <div class="fuelrow">
+          <div class="top"><div class="name">${m.label}</div><div class="figs num">${fmt(m.total)}</div></div>
+          <div class="track"><div class="fill ok" style="width:${maxMes ? Math.max(m.total/maxMes*100, m.total>0?4:0) : 0}%"></div></div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function renderMonthlySummaryDetail(s){
+  const ahorroTotal = s.ahorroReal.emergencia + s.ahorroReal.proposito + s.ahorroReal.sinSubtype;
+  return `
+    <div class="divider"></div>
+    <div class="proj-explain">${escapeHtml(s.diagnostico)}</div>
+    <div class="card-tile-meta" style="margin-top:10px;">
+      <span>Ingreso real: ${fmt(s.ingresoReal)} (configurado ${fmt(s.ingresoConfigurado)})</span>
+      <span>Gasto total: ${fmt(s.gastoTotal)}</span>
+      <span>Ahorro: ${fmt(ahorroTotal)} / meta ${fmt(Math.round(s.ahorroMeta))}</span>
+      <span>Interés pagado est.: ${fmt(s.interesPagadoTotal)}</span>
+      <span>Deuda: ${fmt(s.deudaTotalInicio)} → ${fmt(s.deudaTotalFin)}</span>
+      <span>Inversión: ${fmt(s.valorInversionesFin)}</span>
+      <span>Patrimonio neto: ${fmt(s.patrimonioNeto)}</span>
+    </div>`;
+}
+
+function renderCierresMensuales(){
+  const sorted = [...state.monthlySummaries].sort((a,b)=>b.month.localeCompare(a.month));
+  const now = new Date();
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth()-1, 1);
+  const prevMonthKey = `${prevMonthDate.getFullYear()}-${String(prevMonthDate.getMonth()+1).padStart(2,'0')}`;
+  const alreadyClosed = sorted.some(s=>s.month===prevMonthKey);
+
+  return `
+    <div class="card">
+      <h2>Cierres mensuales</h2>
+      <div class="setup-note">Congela un resumen del mes (ingresos, gastos, ahorro, deuda, inversión y patrimonio neto) para comparar meses futuros contra un dato fijo, aunque después edites movimientos viejos.</div>
+      <button class="btn-primary" id="btn-close-month" data-close-month="${prevMonthKey}" style="margin-top:0;">${alreadyClosed ? `Volver a cerrar ${MESES[prevMonthDate.getMonth()]}` : `Cerrar ${MESES[prevMonthDate.getMonth()]}`}</button>
+      ${sorted.length ? sorted.map(s=>`
+        <div class="proj-item">
+          <div class="proj-top">
+            <div class="proj-desc">${s.month}</div>
+            <div class="amt num">${fmt(s.patrimonioNeto)}</div>
+          </div>
+          <button class="btn-ghost" data-summary-toggle="${s.id}" style="margin-top:8px;">${state.expandedSummary===s.id ? 'Ocultar detalle' : 'Ver detalle'}</button>
+          ${state.expandedSummary===s.id ? renderMonthlySummaryDetail(s) : ''}
+        </div>`).join('') : `<div class="empty-state">Todavía no cierras ningún mes.</div>`}
+    </div>`;
+}
+
 function renderHistorial(){
   const sorted = [...state.entries].sort((a,b)=> b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   const exportBox = state.showExport ? `
@@ -1319,30 +1891,33 @@ function renderHistorial(){
       <textarea readonly id="csv-box" style="width:100%;height:160px;background:var(--panel-alt);color:var(--text);border:1px solid var(--stroke);border-radius:10px;padding:10px;font-family:'Space Mono',monospace;font-size:11px;">${toCSV()}</textarea>
     </div>` : '';
 
-  if(sorted.length===0){
-    return `<div class="card"><div class="empty-state">Todavía no registras movimientos.<br>Ve a la pestaña Registrar para capturar el primero.</div></div>`;
-  }
-  const items = sorted.map(e=>{
-    const sign = e.type==='gasto' ? '−' : '+';
-    return `
-    <div class="hist-item">
-      <div>
-        <div>${escapeHtml(e.note) || escapeHtml(catName(e.category)) || (e.type==='ingreso'?'Ingreso':'Ahorro')}</div>
-        <div class="meta">${e.date}${e.type==='gasto' ? ' · '+escapeHtml(catName(e.category)) : ''}</div>
+  const movimientosCard = sorted.length === 0
+    ? `<div class="card"><div class="empty-state">Todavía no registras movimientos.<br>Ve a la pestaña Registrar para capturar el primero.</div></div>`
+    : `<div class="card">
+        <h2>Historial</h2>
+        ${sorted.map(e=>{
+          const sign = e.type==='gasto' ? '−' : '+';
+          return `
+          <div class="hist-item">
+            <div>
+              <div>${escapeHtml(e.note) || escapeHtml(catName(e.category)) || (e.type==='ingreso'?'Ingreso':'Ahorro')}</div>
+              <div class="meta">${e.date}${e.type==='gasto' ? ' · '+escapeHtml(catName(e.category)) : ''}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;">
+              <div class="amt ${e.type}">${sign}${fmt(e.amount)}</div>
+              <button data-del="${e.id}">✕</button>
+            </div>
+          </div>`;
+        }).join('')}
+        <button class="btn-ghost" id="btn-export">${state.showExport? 'Ocultar exportación' : 'Exportar CSV para el Excel'}</button>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;">
-        <div class="amt ${e.type}">${sign}${fmt(e.amount)}</div>
-        <button data-del="${e.id}">✕</button>
-      </div>
-    </div>`;
-  }).join('');
+      ${exportBox}`;
+
   return `
-    <div class="card">
-      <h2>Historial</h2>
-      ${items}
-      <button class="btn-ghost" id="btn-export">${state.showExport? 'Ocultar exportación' : 'Exportar CSV para el Excel'}</button>
-    </div>
-    ${exportBox}`;
+    ${renderIngresos()}
+    ${renderCierresMensuales()}
+    ${movimientosCard}
+  `;
 }
 
 function renderAjustes(){
@@ -1381,7 +1956,14 @@ function renderAjustes(){
         <div><label>Estilo de vida</label><input type="number" id="a-estilo" value="${cfg.allocPct.estiloVida}"></div>
         <div><label>Diversión</label><input type="number" id="a-div" value="${cfg.allocPct.diversion}"></div>
       </div>
-      <div class="setup-note" id="pct-warn"></div>
+      <div class="setup-note" id="pct-warn" style="margin-top:8px;margin-bottom:0;"></div>
+    </div>
+    <div class="card">
+      <h2>Ahorro: emergencia vs propósito</h2>
+      <label>% del ahorro que va a fondo de emergencia (el resto va a propósito)</label>
+      <input type="number" id="a-emergencia-pct" min="0" max="100" value="${cfg.allocPct.emergenciaPctOfAhorro}">
+      <label>Meta de meses de gastos fijos que quieres cubrir con el fondo de emergencia</label>
+      <input type="number" id="a-meta-meses" min="1" value="${cfg.metaFondoEmergenciaMeses}">
     </div>
     <div class="card">
       <h2>Gastos fijos (Estilo de vida)</h2>
@@ -1393,16 +1975,21 @@ function renderAjustes(){
     </div>
     <div class="card">
       <h2>Bot (Pregúntale a Claude)</h2>
-      <label>Código de acceso (opcional)</label>
+      <label>Palabra clave de pantalla (opcional)</label>
       <input type="text" id="a-access-code" value="${escapeHtml(state.accessCode)}" placeholder="Solo si configuraste APP_ACCESS_CODE en Netlify">
-      <div class="setup-note" style="margin-top:8px;margin-bottom:0;">Déjalo vacío a menos que hayas configurado la variable de entorno APP_ACCESS_CODE en tu sitio de Netlify como candado extra para el bot.</div>
+      <div class="setup-note" style="margin-top:8px;margin-bottom:0;">Esto NO es una medida de seguridad real — solo evita que alguien que abra la app por curiosidad use tu crédito de API sin querer. No protege tus datos financieros (eso lo hace el login + Row Level Security de Supabase). Déjalo vacío si no configuraste APP_ACCESS_CODE en Netlify.</div>
     </div>
     <div class="card">
       <h2>Respaldo</h2>
-      <div class="setup-note">Tus datos ya viven en la nube y se sincronizan solos entre dispositivos con tu cuenta. Esto es solo una copia extra por si acaso.</div>
-      <button class="btn-ghost" id="btn-backup">Descargar respaldo (.json)</button>
+      ${state.session
+        ? `<div class="setup-note" style="margin-bottom:${state.showBackup?'14px':'0'};">Tus datos ya viven en la nube y se sincronizan solos entre dispositivos con tu cuenta. Esto es solo una copia ocasional por si acaso.</div>`
+        : `<div class="setup-note" style="margin-bottom:${state.showBackup?'14px':'0'};">Estás en modo local — descarga un respaldo de vez en cuando para no perder tus datos si cambias de teléfono.</div>`
+      }
+      ${state.showBackup ? `
+      <button class="btn-ghost" id="btn-backup" style="margin-top:0;">Descargar respaldo (.json)</button>
       <label style="margin-top:10px;">Restaurar desde un respaldo</label>
       <input type="file" id="btn-restore" accept="application/json">
+      ` : `<button class="btn-ghost" id="btn-show-backup" style="margin-top:0;">Mostrar opciones de respaldo</button>`}
     </div>
   `;
 }
@@ -1422,6 +2009,9 @@ function attachHandlers(){
     document.querySelectorAll('#type-seg button').forEach(b=>{
       b.onclick = ()=>{ state.entryDraft.type = b.dataset.type; render(); };
     });
+    document.querySelectorAll('#ahorro-sub-seg button').forEach(b=>{
+      b.onclick = ()=>{ state.entryDraft.subtype = b.dataset.subtype; render(); };
+    });
     document.getElementById('save-entry').onclick = async ()=>{
       const amt = parseFloat(document.getElementById('f-amount').value);
       if(!amt || amt<=0){ showToast('Pon un monto válido'); return; }
@@ -1429,10 +2019,13 @@ function attachHandlers(){
       const note = document.getElementById('f-note').value;
       const type = state.entryDraft.type;
       const category = type==='gasto' ? document.getElementById('f-cat').value : null;
-      const entry = { id: uid(), type, category, amount: amt, note, date };
+      const fuente = type==='ingreso' ? document.getElementById('f-fuente').value : null;
+      const subtype = type==='ahorro' ? state.entryDraft.subtype : null;
+      const metaNombre = (type==='ahorro' && subtype==='proposito') ? document.getElementById('f-meta-nombre').value.trim() : '';
+      const entry = { id: uid(), type, category, amount: amt, note, date, fuente, subtype, metaNombre };
       const ok = await addEntryPersist(entry);
       if(!ok){ showToast('No se pudo guardar'); return; }
-      state.entryDraft = { type:'gasto', category:null, amount:'', note:'', date: todayISO() };
+      state.entryDraft = { type:'gasto', category:null, subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() };
       showToast('Guardado ✓');
       state.tab = 'hoy';
       render();
@@ -1587,6 +2180,69 @@ function attachHandlers(){
         render();
       };
     });
+    document.querySelectorAll('[data-whatif-card]').forEach(b=>{
+      b.onclick = ()=>{
+        const cardId = b.dataset.whatifCard;
+        const input = document.getElementById('whatif-amount-'+cardId);
+        const extra = parseFloat(input.value)||0;
+        const card = state.config.debt.cards.find(c=>c.id===cardId);
+        if(!card) return;
+        state.cardWhatIf[cardId] = { extra: input.value, result: extra>0 ? computeWhatIf(card, extra) : null };
+        render();
+      };
+    });
+  }
+
+  if(state.tab==='inversion'){
+    const openBtn = document.getElementById('inv-add-open');
+    if(openBtn) openBtn.onclick = ()=>{
+      state.investmentDraft = { editingId:null, name:'', type:'', montoInicial:'', aportacionMensual:'', tasaAnualEstimada:'', fechaInicio: todayISO() };
+      state.showInvestmentForm = true;
+      render();
+    };
+    const cancelBtn = document.getElementById('inv-cancel');
+    if(cancelBtn) cancelBtn.onclick = ()=>{ state.showInvestmentForm = false; state.investmentDraft = null; render(); };
+
+    const saveBtn = document.getElementById('inv-save');
+    if(saveBtn) saveBtn.onclick = async ()=>{
+      const name = document.getElementById('i-name').value.trim();
+      if(!name){ showToast('Ponle un nombre a la inversión'); return; }
+      const inv = {
+        id: state.investmentDraft.editingId || 'inv'+uid(),
+        name,
+        type: document.getElementById('i-type').value.trim(),
+        montoInicial: parseFloat(document.getElementById('i-monto').value)||0,
+        aportacionMensual: parseFloat(document.getElementById('i-aportacion').value)||0,
+        tasaAnualEstimada: parseFloat(document.getElementById('i-tasa').value)||0,
+        fechaInicio: document.getElementById('i-fecha').value || todayISO(),
+      };
+      const invs = state.config.investments;
+      const idx = invs.findIndex(x=>x.id===inv.id);
+      if(idx>=0) invs[idx] = inv; else invs.push(inv);
+      await saveConfig();
+      state.showInvestmentForm = false;
+      state.investmentDraft = null;
+      showToast('Inversión guardada ✓');
+      render();
+    };
+
+    document.querySelectorAll('[data-inv-edit]').forEach(b=>{
+      b.onclick = ()=>{
+        const inv = state.config.investments.find(x=>x.id===b.dataset.invEdit);
+        if(!inv) return;
+        state.investmentDraft = { editingId:inv.id, name:inv.name, type:inv.type||'', montoInicial:inv.montoInicial, aportacionMensual:inv.aportacionMensual, tasaAnualEstimada:inv.tasaAnualEstimada, fechaInicio:inv.fechaInicio };
+        state.showInvestmentForm = true;
+        render();
+      };
+    });
+    document.querySelectorAll('[data-inv-del]').forEach(b=>{
+      b.onclick = async ()=>{
+        state.config.investments = state.config.investments.filter(x=>x.id!==b.dataset.invDel);
+        await saveConfig();
+        showToast('Inversión eliminada');
+        render();
+      };
+    });
   }
 
   if(state.tab==='historial'){
@@ -1601,6 +2257,27 @@ function attachHandlers(){
     if(expBtn) expBtn.onclick = ()=>{ state.showExport = !state.showExport; render(); };
     const csvBox = document.getElementById('csv-box');
     if(csvBox) csvBox.onclick = ()=> csvBox.select();
+
+    const closeBtn = document.getElementById('btn-close-month');
+    if(closeBtn) closeBtn.onclick = async ()=>{
+      const [y, m] = closeBtn.dataset.closeMonth.split('-').map(Number);
+      const summary = computeMonthClose(y, m-1);
+      const beforeDate = new Date(y, m-2, 1);
+      const beforeKey = `${beforeDate.getFullYear()}-${String(beforeDate.getMonth()+1).padStart(2,'0')}`;
+      const prevSummary = state.monthlySummaries.find(s=>s.month===beforeKey) || null;
+      summary.diagnostico = generateDiagnostico(summary, prevSummary);
+      const ok = await addMonthlySummaryPersist(summary);
+      if(!ok){ showToast('No se pudo guardar el cierre'); return; }
+      state.expandedSummary = summary.id;
+      showToast('Mes cerrado ✓');
+      render();
+    };
+    document.querySelectorAll('[data-summary-toggle]').forEach(b=>{
+      b.onclick = ()=>{
+        state.expandedSummary = state.expandedSummary===b.dataset.summaryToggle ? null : b.dataset.summaryToggle;
+        render();
+      };
+    });
   }
 
   if(state.tab==='ajustes'){
@@ -1610,8 +2287,10 @@ function attachHandlers(){
       const e = parseFloat(document.getElementById('a-estilo').value)||0;
       const d = parseFloat(document.getElementById('a-div').value)||0;
       const t = a+e+d;
-      warnEl.textContent = t===100 ? `Suman ${t}% ✓` : `Ojo: tus porcentajes suman ${t}%, no 100%.`;
-      warnEl.style.color = t===100 ? 'var(--ok)' : 'var(--warn)';
+      // Informativo, no un error: en la práctica los gastos fijos varían mes a
+      // mes y no vale la pena forzar que sumen exactamente 100%.
+      warnEl.textContent = t===100 ? `Suman ${t}% ✓` : `Suman ${t}% (no tiene que ser exactamente 100%, es solo referencia).`;
+      warnEl.style.color = 'var(--muted)';
     }
     ['a-ahorro','a-estilo','a-div'].forEach(id=> document.getElementById(id).oninput = checkPct);
     checkPct();
@@ -1635,7 +2314,9 @@ function attachHandlers(){
         ahorro: parseFloat(document.getElementById('a-ahorro').value)||0,
         estiloVida: parseFloat(document.getElementById('a-estilo').value)||0,
         diversion: parseFloat(document.getElementById('a-div').value)||0,
+        emergenciaPctOfAhorro: Math.min(100, Math.max(0, parseFloat(document.getElementById('a-emergencia-pct').value)||0)),
       };
+      state.config.metaFondoEmergenciaMeses = parseFloat(document.getElementById('a-meta-meses').value)||3;
       document.querySelectorAll('#fx-rows .fixed-row').forEach((row,i)=>{
         const nameInp = row.querySelector(`[data-fx-name="${i}"]`);
         const amtInp = row.querySelector(`[data-fx-amt="${i}"]`);
@@ -1652,7 +2333,11 @@ function attachHandlers(){
       render();
     };
 
-    document.getElementById('btn-backup').onclick = ()=>{
+    const showBackupBtn = document.getElementById('btn-show-backup');
+    if(showBackupBtn) showBackupBtn.onclick = ()=>{ state.showBackup = true; render(); state.tab='ajustes'; };
+
+    const backupBtn = document.getElementById('btn-backup');
+    if(backupBtn) backupBtn.onclick = ()=>{
       const data = JSON.stringify({ config: state.config, entries: state.entries, proyecciones: state.proyecciones }, null, 2);
       const blob = new Blob([data], {type:'application/json'});
       const url = URL.createObjectURL(blob);
@@ -1662,7 +2347,8 @@ function attachHandlers(){
       URL.revokeObjectURL(url);
       showToast('Respaldo descargado ✓');
     };
-    document.getElementById('btn-restore').onchange = (ev)=>{
+    const restoreInput = document.getElementById('btn-restore');
+    if(restoreInput) restoreInput.onchange = (ev)=>{
       const file = ev.target.files[0];
       if(!file) return;
       const reader = new FileReader();
@@ -1672,13 +2358,12 @@ function attachHandlers(){
           if(data.config) state.config = data.config;
           if(data.entries) state.entries = data.entries;
           if(data.proyecciones) state.proyecciones = data.proyecciones;
-          if(!state.config.debt) state.config.debt = { cards: [] };
-          state.config.debt.cards = state.config.debt.cards.map(normalizeCard);
+          state.config = normalizeConfig(state.config);
           await saveConfig();
           if(isCloud()){
             const userId = state.session.user.id;
             if(state.entries.length){
-              await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date })));
+              await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null })));
             }
             if(state.proyecciones.length){
               await supa.from('projections').upsert(state.proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));
