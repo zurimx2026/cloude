@@ -28,14 +28,20 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
 
 ## Módulos
 
-- **Proyectar**: apartas un gasto futuro (qué, cuánto, para cuándo) y la app te da un
-  semáforo (✓/⚠/✗) evaluando tu presupuesto de Diversión/Libre restante, tu avance de
-  ahorro del mes y si tienes deuda generando interés. La lógica vive en
-  `evaluateProjection()` dentro de `public/index.html` — es una heurística transparente,
-  no una llamada a IA, así que siempre puedes ver los números detrás de la recomendación.
-- **Pregúntale a Claude**: dentro de la misma pestaña, un cuadro de chat que manda tu
-  pregunta + un resumen de tu situación financiera actual (`buildFinancialContext()`) a
-  la función `ask-bot`, que la reenvía a la API de Claude.
+- **Proyectar** (incluye Proyecciones + Inversión en la misma pestaña):
+  - **Proyecciones**: apartas un gasto futuro (qué, cuánto, para cuándo) y la app te da un
+    semáforo (✓/⚠/✗) evaluando tu presupuesto de Diversión/Libre restante, tu avance de
+    ahorro del mes y si tienes deuda generando interés. La lógica vive en
+    `evaluateProjection()` dentro de `public/index.html` — es una heurística transparente,
+    no una llamada a IA, así que siempre puedes ver los números detrás de la recomendación.
+  - **Inversión**: control de inversiones (CETES, fondos indexados, plazo fijo, etc. — el
+    tipo es texto libre, solo para mostrar). Por inversión: monto inicial, aportación
+    mensual, tasa anual estimada y fecha de inicio. Proyecta el valor estimado a 12/24/60
+    meses con interés compuesto simple (`estimateInvestmentValue()`) — no considera
+    comisiones ni impuestos, es una estimación para orientar, no un cálculo contable.
+  - **Pregúntale a Claude**: un cuadro de chat que manda tu pregunta + un resumen de tu
+    situación financiera actual (`buildFinancialContext()`, que ya incluye lo de arriba) a
+    la función `ask-bot`, que la reenvía a la API de Claude.
 - **Tarjetas**: pestaña dedicada al control de tus tarjetas de crédito. Por cada tarjeta:
   banco, últimos 4 dígitos, saldo, límite (con barra de % de uso), tasa mensual, abono
   mensual comprometido, día de corte y de pago, y pago mínimo. Incluye:
@@ -62,11 +68,14 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
     liquidación) como parte de tu contexto financiero.
   - **"¿Y si pago extra?"**: calculadora de abono hipotético — pon un extra mensual y
     compara contra tu abono actual cuántos meses y cuánto interés te ahorrarías.
-- **Inversión**: pestaña de control de inversiones (CETES, fondos indexados, plazo fijo,
-  etc. — el tipo es texto libre, solo para mostrar). Por inversión: monto inicial,
-  aportación mensual, tasa anual estimada y fecha de inicio. Proyecta el valor estimado a
-  12/24/60 meses con interés compuesto simple (`estimateInvestmentValue()`) — no considera
-  comisiones ni impuestos, es una estimación para orientar, no un cálculo contable.
+- **Importar desde Excel**: en Historial, sube un `.xlsx`/`.xls`/`.csv` (por ejemplo el
+  mismo CSV que exportas desde ahí) y la app llena tus movimientos sola. Detecta columnas
+  de forma flexible — Fecha, Tipo, Categoría, Método de pago, Monto, Nota, Fuente — sin
+  importar el orden ni mayúsculas/minúsculas (`parseImportedRows()`). Antes de guardar
+  nada te muestra una vista previa con cuántos movimientos va a importar y cuántas filas
+  no pudo leer, para que confirmes. Si un gasto trae método de pago con el nombre de una
+  tarjeta, esa tarjeta sube de saldo automático igual que al capturar a mano. No detecta
+  duplicados — usa el archivo del mismo periodo una sola vez.
 - **Ahorro: emergencia vs propósito**: los movimientos de ahorro ahora piden si son para tu
   fondo de emergencia o para una meta con nombre (viaje, enganche, etc.). En Ajustes defines
   qué % de tu ahorro total va a cada uno. En Hoy se ven como dos barras separadas, y la de

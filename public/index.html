@@ -55,7 +55,7 @@
   }
   nav.tabs button{
     flex:1;background:none;border:none;color:var(--muted);
-    font-family:'Manrope',sans-serif;font-weight:700;font-size:8.5px;
+    font-family:'Manrope',sans-serif;font-weight:700;font-size:9.5px;
     letter-spacing:0;text-transform:uppercase;line-height:1.25;
     padding:7px 1px;border-radius:10px;cursor:pointer;
   }
@@ -213,12 +213,12 @@
   <button data-tab="registrar">Registrar</button>
   <button data-tab="proyectar">Proyectar</button>
   <button data-tab="tarjetas">Tarjetas</button>
-  <button data-tab="inversion">Inversión</button>
   <button data-tab="historial">Historial</button>
   <button data-tab="ajustes">Ajustes</button>
 </nav>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="config.js"></script>
 <script>
 const supa = (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.supabase)
@@ -271,6 +271,7 @@ let state = {
   showInvestmentForm: false,
   investmentDraft: null,
   monthlySummaries: [],
+  importPreview: null,
   expandedSummary: null,
   tab: 'hoy',
   showExport: false,
@@ -965,7 +966,6 @@ function render(){
   else if(state.tab==='registrar') body = renderRegistrar();
   else if(state.tab==='proyectar') body = renderProyectar();
   else if(state.tab==='tarjetas') body = renderTarjetas();
-  else if(state.tab==='inversion') body = renderInversion();
   else if(state.tab==='historial') body = renderHistorial();
   else if(state.tab==='ajustes') body = renderAjustes();
 
@@ -1526,6 +1526,7 @@ function renderProyectar(){
       <h2>Tus proyecciones</h2>
       ${listHtml}
     </div>
+    ${renderInversion()}
     <div class="card">
       <h2>Pregúntale a Claude</h2>
       <div class="setup-note">Le mando tu contexto financiero actual (ingresos, gastos fijos, deuda, ahorro del mes y tus proyecciones) junto con tu pregunta. No lo verás escrito, solo la respuesta.</div>
@@ -1864,6 +1865,109 @@ function renderInvestmentTile(inv){
     </div>`;
 }
 
+/* ---------- importar movimientos desde Excel/CSV ---------- */
+function findCol(headers, patterns){
+  return headers.find(h=> patterns.some(p=> p.test(String(h))));
+}
+function parseExcelDate(val){
+  if(val instanceof Date && !isNaN(val)){
+    return val.getFullYear()+'-'+String(val.getMonth()+1).padStart(2,'0')+'-'+String(val.getDate()).padStart(2,'0');
+  }
+  if(typeof val === 'number' && window.XLSX && XLSX.SSF){
+    const d = XLSX.SSF.parse_date_code(val);
+    if(d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+  }
+  if(typeof val === 'string'){
+    const s = val.trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m){
+      let a=+m[1], b=+m[2], y=m[3];
+      let day, month;
+      if(a>12){ day=a; month=b; } else if(b>12){ day=b; month=a; } else { day=a; month=b; } // DD/MM/AAAA por default (convención MX)
+      return `${y}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    }
+    const d2 = new Date(s);
+    if(!isNaN(d2)) return d2.getFullYear()+'-'+String(d2.getMonth()+1).padStart(2,'0')+'-'+String(d2.getDate()).padStart(2,'0');
+  }
+  return null;
+}
+function parseImportedRows(rows){
+  if(!rows || !rows.length){
+    return { valid: [], errors: [{ row:0, reason:'El archivo está vacío o no tiene encabezados.' }] };
+  }
+  const headers = Object.keys(rows[0]);
+  const col = {
+    fecha: findCol(headers, [/fecha/i, /^date$/i]),
+    tipo: findCol(headers, [/^tipo$/i, /^type$/i]),
+    categoria: findCol(headers, [/categor/i]),
+    metodo: findCol(headers, [/m[eé]todo/i, /tarjeta/i, /forma de pago/i]),
+    monto: findCol(headers, [/monto/i, /amount/i, /cantidad/i, /importe/i]),
+    nota: findCol(headers, [/nota/i, /concepto/i, /descripci[oó]n/i, /^note$/i]),
+    fuente: findCol(headers, [/fuente/i, /^source$/i]),
+  };
+  if(!col.fecha || !col.monto){
+    return { valid: [], errors: [{ row:0, reason:'No encontré columnas de Fecha y Monto — revisa los encabezados de tu archivo (puedes basarte en el CSV que exportas desde aquí).' }] };
+  }
+  const cfg = state.config;
+  const valid = [], errors = [];
+  rows.forEach((row,i)=>{
+    const fecha = parseExcelDate(row[col.fecha]);
+    const montoRaw = row[col.monto];
+    const monto = typeof montoRaw==='number' ? montoRaw : parseFloat(String(montoRaw||'').replace(/[^0-9.-]/g,''));
+    if(!fecha || !monto || monto<=0){
+      errors.push({ row:i+2, reason: !fecha ? 'Fecha inválida' : 'Monto inválido' });
+      return;
+    }
+    let tipo = 'gasto';
+    if(col.tipo){
+      const t = String(row[col.tipo]||'').toLowerCase();
+      if(/ingreso|income/.test(t)) tipo = 'ingreso';
+      else if(/ahorro|saving/.test(t)) tipo = 'ahorro';
+      else if(/gasto|expense|egreso/.test(t)) tipo = 'gasto';
+    }
+    let category = null, metodoPago = null, fuente = null, subtype = null, metaNombre = '';
+    if(tipo==='gasto'){
+      const catRaw = col.categoria ? String(row[col.categoria]||'').trim().toLowerCase() : '';
+      const fx = cfg.fixedExpenses.find(c=>c.name.toLowerCase()===catRaw || c.id===catRaw);
+      category = fx ? fx.id : (/^diversi/.test(catRaw) ? 'diversion' : 'otro');
+      const metRaw = col.metodo ? String(row[col.metodo]||'').trim().toLowerCase() : '';
+      if(metRaw && !/efectivo|d[eé]bito|cash/.test(metRaw)){
+        const card = cfg.debt.cards.find(c=> c.name.toLowerCase()===metRaw || (c.last4 && metRaw.includes(c.last4)));
+        metodoPago = card ? card.id : null;
+      }
+    } else if(tipo==='ingreso'){
+      const fRaw = col.fuente ? String(row[col.fuente]||'').trim().toLowerCase() : '';
+      const fx2 = FUENTES_INGRESO.find(f=> f.label.toLowerCase()===fRaw || f.id===fRaw);
+      fuente = fx2 ? fx2.id : 'otro';
+    } else if(tipo==='ahorro'){
+      subtype = 'proposito';
+    }
+    const nota = col.nota ? String(row[col.nota]||'').trim() : '';
+    valid.push({ id: uid(), type: tipo, category, amount: Math.round(monto*100)/100, note: nota, date: fecha, fuente, subtype, metaNombre, metodoPago });
+  });
+  return { valid, errors };
+}
+async function bulkImportEntriesPersist(entries){
+  if(isCloud()){
+    const userId = state.session.user.id;
+    const rows = entries.map(e=>({
+      id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date,
+      subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null, metodo_pago:e.metodoPago||null,
+    }));
+    for(let i=0;i<rows.length;i+=500){
+      const { error } = await supa.from('entries').insert(rows.slice(i,i+500));
+      if(error) return false;
+    }
+    state.entries.push(...entries);
+  } else {
+    state.entries.push(...entries);
+    await persistEntriesLocal();
+  }
+  return true;
+}
+
 function toCSV(){
   const rows = [['fecha','tipo','categoria','metodo_pago','monto','nota']];
   [...state.entries].sort((a,b)=> a.date.localeCompare(b.date)).forEach(e=>{
@@ -1947,6 +2051,36 @@ function renderCierresMensuales(){
     </div>`;
 }
 
+function renderImportBox(){
+  const p = state.importPreview;
+  return `
+    <div class="card">
+      <h2>Importar movimientos desde Excel</h2>
+      <div class="setup-note">Sube un .xlsx o .csv con columnas de Fecha, Tipo (gasto/ingreso/ahorro), Categoría, Método de pago, Monto y Nota — el mismo formato del CSV que exportas aquí abajo. No detecta duplicados, así que revisa antes de confirmar.</div>
+      <input type="file" id="import-file" accept=".xlsx,.xls,.csv">
+      ${p ? renderImportPreview(p) : ''}
+    </div>`;
+}
+function renderImportPreview(p){
+  const rows = p.valid.slice(0,5);
+  if(!p.valid.length && !p.errors.length){
+    return `<div class="divider"></div><div class="empty-state">No encontré movimientos en ese archivo.</div><button class="btn-ghost" id="btn-cancel-import">Cerrar</button>`;
+  }
+  return `
+    <div class="divider"></div>
+    <div class="proj-explain">${p.valid.length} movimiento${p.valid.length===1?'':'s'} listo${p.valid.length===1?'':'s'} para importar${p.errors.length ? ` · ${p.errors.length} fila${p.errors.length===1?'':'s'} con problemas (se van a ignorar)` : ''}.</div>
+    ${rows.length ? rows.map(e=>`
+      <div class="hist-item">
+        <div><div>${escapeHtml(e.note) || escapeHtml(catName(e.category)) || '—'}</div><div class="meta">${e.date} · ${e.type}</div></div>
+        <div class="amt ${e.type}">${fmt(e.amount)}</div>
+      </div>`).join('') : ''}
+    ${p.valid.length>5 ? `<div class="meta" style="font-size:11px;color:var(--muted);margin-top:6px;">y ${p.valid.length-5} más…</div>` : ''}
+    <div class="proj-actions" style="margin-top:14px;">
+      ${p.valid.length ? `<button class="btn-primary" id="btn-confirm-import" style="margin-top:0;">Importar ${p.valid.length}</button>` : ''}
+      <button class="btn-ghost" id="btn-cancel-import" style="margin-top:0;">Cancelar</button>
+    </div>`;
+}
+
 function renderHistorial(){
   const sorted = [...state.entries].sort((a,b)=> b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   const exportBox = state.showExport ? `
@@ -1981,6 +2115,7 @@ function renderHistorial(){
   return `
     ${renderIngresos()}
     ${renderCierresMensuales()}
+    ${renderImportBox()}
     ${movimientosCard}
   `;
 }
@@ -2263,7 +2398,7 @@ function attachHandlers(){
     });
   }
 
-  if(state.tab==='inversion'){
+  if(state.tab==='proyectar'){
     const openBtn = document.getElementById('inv-add-open');
     if(openBtn) openBtn.onclick = ()=>{
       state.investmentDraft = { editingId:null, name:'', type:'', montoInicial:'', aportacionMensual:'', tasaAnualEstimada:'', fechaInicio: todayISO() };
@@ -2332,6 +2467,48 @@ function attachHandlers(){
     if(expBtn) expBtn.onclick = ()=>{ state.showExport = !state.showExport; render(); };
     const csvBox = document.getElementById('csv-box');
     if(csvBox) csvBox.onclick = ()=> csvBox.select();
+
+    const importFileInput = document.getElementById('import-file');
+    if(importFileInput) importFileInput.onchange = (ev)=>{
+      const file = ev.target.files[0];
+      if(!file) return;
+      if(!window.XLSX){ showToast('No se pudo cargar el lector de Excel — revisa tu conexión e intenta de nuevo.'); return; }
+      const reader = new FileReader();
+      reader.onload = (e)=>{
+        try{
+          const data = new Uint8Array(e.target.result);
+          const wb = XLSX.read(data, { type:'array', cellDates:true });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { defval:'' });
+          state.importPreview = parseImportedRows(rows);
+          render();
+        }catch(err){
+          showToast('No pude leer ese archivo — ¿es un .xlsx o .csv válido?');
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    };
+    const confirmImportBtn = document.getElementById('btn-confirm-import');
+    if(confirmImportBtn) confirmImportBtn.onclick = async ()=>{
+      const entries = state.importPreview.valid;
+      const ok = await bulkImportEntriesPersist(entries);
+      if(!ok){ showToast('No se pudo importar'); return; }
+      const byCard = {};
+      entries.forEach(e=>{
+        if(e.type==='gasto' && e.metodoPago) byCard[e.metodoPago] = (byCard[e.metodoPago]||0) + e.amount;
+      });
+      let touched = false;
+      Object.keys(byCard).forEach(cardId=>{
+        const card = state.config.debt.cards.find(c=>c.id===cardId);
+        if(card){ card.saldo += byCard[cardId]; touched = true; }
+      });
+      if(touched) await saveConfig();
+      state.importPreview = null;
+      showToast(`${entries.length} movimiento${entries.length===1?'':'s'} importado${entries.length===1?'':'s'} ✓`);
+      render();
+    };
+    const cancelImportBtn = document.getElementById('btn-cancel-import');
+    if(cancelImportBtn) cancelImportBtn.onclick = ()=>{ state.importPreview = null; render(); };
 
     const closeBtn = document.getElementById('btn-close-month');
     if(closeBtn) closeBtn.onclick = async ()=>{
