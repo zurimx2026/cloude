@@ -42,6 +42,13 @@ supabase/schema.sql           Esquema de base de datos (tablas + Row Level Secur
   - **Resumen global**: deuda total, interés estimado del mes, abono total comprometido,
     % de uso de crédito (solo entre las tarjetas con límite cargado), y qué tarjeta
     conviene priorizar si tienes dinero extra (la de tasa más alta — método "avalancha").
+  - **Reporte automático por ciclo**: al registrar un gasto puedes elegir "Método de
+    pago" — Efectivo/Débito o una de tus tarjetas. Si eliges una tarjeta, el saldo de esa
+    tarjeta sube solo con el gasto (y baja si lo borras), y cada tarjeta muestra cuánto
+    llevas gastado en el ciclo actual (de corte a corte — `cardCycleRange()`; si no
+    configuraste el día de corte, usa el mes calendario de respaldo), con el detalle de
+    cada gasto. Así el saldo mostrado siempre es lo que realmente te toca pagar, sin
+    tener que sumarlo a mano.
   - **Simulador de liquidación** (`simulatePayoff()`): con el saldo, tasa y abono actuales
     de cada tarjeta, calcula en cuántos meses llegas a $0 y cuánto interés vas a pagar en
     el camino — o te avisa si tu abono actual ni siquiera cubre el interés mensual, caso

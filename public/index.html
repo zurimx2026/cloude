@@ -275,7 +275,7 @@ let state = {
   tab: 'hoy',
   showExport: false,
   showBackup: false,
-  entryDraft: { type:'gasto', category:null, subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() },
+  entryDraft: { type:'gasto', category:null, metodoPago:'', subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() },
   projDraft: { desc:'', amount:'', category:'otro', targetMonth: nextMonthKey() },
   chat: { messages: [], loading: false },
   accessCode: ''
@@ -439,6 +439,7 @@ async function addEntryPersist(entry){
       id: entry.id, user_id: state.session.user.id, type: entry.type, category: entry.category,
       amount: entry.amount, note: entry.note, date: entry.date,
       subtype: entry.subtype || null, meta_nombre: entry.metaNombre || null, fuente: entry.fuente || null,
+      metodo_pago: entry.metodoPago || null,
     });
     if(error) return false;
     state.entries.push(entry);
@@ -571,6 +572,7 @@ async function loadEntriesFromSupabase(userId){
   state.entries = (data||[]).map(r=>({
     id:r.id, type:r.type, category:r.category, amount:Number(r.amount), note:r.note||'', date:r.date,
     subtype: r.subtype || null, metaNombre: r.meta_nombre || '', fuente: r.fuente || null,
+    metodoPago: r.metodo_pago || null,
   }));
 }
 async function loadProyeccionesFromSupabase(userId){
@@ -665,7 +667,7 @@ async function importLocalData(){
   }
   await saveConfig();
   if(entries.length){
-    const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null })));
+    const { error } = await supa.from('entries').upsert(entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null, metodo_pago:e.metodoPago||null })));
     if(!error) state.entries = entries;
   }
   if(proyecciones.length){
@@ -726,6 +728,11 @@ function catName(id){
   if(id==='otro') return 'Otro';
   const f = cfg.fixedExpenses.find(c=>c.id===id);
   return f? f.name : (id||'');
+}
+function metodoPagoLabel(id){
+  if(!id) return null;
+  const c = state.config.debt.cards.find(x=>x.id===id);
+  return c ? c.name : 'Tarjeta eliminada';
 }
 
 /* ---------- alerts ---------- */
@@ -913,6 +920,8 @@ function buildFinancialContext(){
         abonoMensualComprometido: c.abonoMensual,
         diaCorte: c.corteDia || null,
         diaPago: c.pagoDia || null,
+        pagoMinimo: c.pagoMinimo || null,
+        gastadoEnCicloActual: Math.round(cardCycleSpend(c)),
         mesesParaLiquidarConAbonoActual: sim.neverPaysOff ? null : sim.months,
         interesTotalProyectado: sim.neverPaysOff ? null : Math.round(sim.totalInterest),
         nuncaSeLiquidaConAbonoActual: !!sim.neverPaysOff,
@@ -1093,6 +1102,32 @@ function simulatePayoff(card){
   }
   if(saldo>0.5) return { months:null, totalInterest:null, neverPaysOff:true };
   return { months, totalInterest, neverPaysOff:false };
+}
+
+/* ---------- gasto por tarjeta, ciclo de corte a corte ---------- */
+function cardCycleRange(card, refDate){
+  const now = refDate || new Date();
+  if(!card.corteDia){
+    // Sin día de corte configurado: usamos el mes calendario como respaldo.
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth()+1, 1);
+    return { start, end, usesCalendarFallback: true };
+  }
+  const end = nextOccurrenceOfDay(card.corteDia);
+  const start = new Date(end);
+  start.setMonth(start.getMonth()-1);
+  return { start, end, usesCalendarFallback: false };
+}
+function cardCycleGastos(card){
+  const { start, end } = cardCycleRange(card);
+  return state.entries.filter(e=>{
+    if(e.type!=='gasto' || e.metodoPago!==card.id) return false;
+    const d = new Date(e.date+'T12:00:00');
+    return d>=start && d<end;
+  }).sort((a,b)=> b.date.localeCompare(a.date));
+}
+function cardCycleSpend(card){
+  return sum(cardCycleGastos(card));
 }
 
 function computeNetWorth(){
@@ -1388,6 +1423,7 @@ function fuenteLabel(id){
 }
 
 function renderRegistrar(){
+  const cfg = state.config;
   const d = state.entryDraft;
   const showCategory = d.type==='gasto';
   const showFuente = d.type==='ingreso';
@@ -1407,7 +1443,15 @@ function renderRegistrar(){
 
       ${showCategory? `
       <label>Categoría</label>
-      <select id="f-cat">${categoryOptionsHtml(d.category)}</select>` : ''}
+      <select id="f-cat">${categoryOptionsHtml(d.category)}</select>
+
+      <label>Método de pago</label>
+      <select id="f-metodo-pago">
+        <option value="">Efectivo / Débito</option>
+        ${cfg.debt.cards.map(c=>`<option value="${c.id}" ${d.metodoPago===c.id?'selected':''}>${escapeHtml(c.name)}${c.last4?' •••• '+escapeHtml(c.last4):''}</option>`).join('')}
+      </select>
+      <div class="setup-note" style="margin:6px 0 0;">Si pagas con una tarjeta de crédito, el saldo de esa tarjeta sube automático con este gasto.</div>
+      ` : ''}
 
       ${showFuente? `
       <label>Fuente</label>
@@ -1631,6 +1675,11 @@ function renderCardTile(c){
     : '';
   const corteBadge = proximoCorte ? `Corte: ${proximoCorte.getDate()} ${MESES[proximoCorte.getMonth()].slice(0,3)}` : '';
 
+  const cycle = cardCycleRange(c);
+  const cycleGastos = cardCycleGastos(c);
+  const cycleSpend = sum(cycleGastos);
+  const cyclePct = c.limite>0 ? cycleSpend/c.limite : null;
+
   const isExpanded = state.expandedCard === c.id;
   const payments = state.cardPayments.filter(p=>p.cardId===c.id).slice(0,5);
 
@@ -1655,8 +1704,17 @@ function renderCardTile(c){
       <div class="card-tile-meta">
         <span>Tasa: ${c.tasaMensual}%/mes</span>
         <span>Abono: ${fmt(c.abonoMensual)}/mes</span>
+        ${c.pagoMinimo>0 ? `<span>Pago mínimo: ${fmt(c.pagoMinimo)}</span>` : ''}
         ${corteBadge ? `<span>${corteBadge}</span>` : ''}
         ${pagoBadge}
+      </div>
+
+      <div class="fuelrow" style="margin-top:12px;">
+        <div class="top">
+          <div class="name">🧾 Gastado en este ciclo${cycle.usesCalendarFallback ? ' (mes, sin corte configurado)' : ''}</div>
+          <div class="figs num">${fmt(cycleSpend)}</div>
+        </div>
+        ${cyclePct!==null ? `<div class="track"><div class="fill ${utilClass(cyclePct)}" style="width:${Math.min(cyclePct*100,100)}%"></div></div>` : ''}
       </div>
 
       <div class="proj-explain" style="margin-top:8px;">${payoffText}</div>
@@ -1668,12 +1726,19 @@ function renderCardTile(c){
 
       <div class="proj-actions">
         <button class="btn-ghost" data-card-edit="${c.id}">Editar</button>
-        <button class="btn-ghost" data-card-history="${c.id}">${isExpanded ? 'Ocultar pagos' : 'Ver pagos'}</button>
+        <button class="btn-ghost" data-card-history="${c.id}">${isExpanded ? 'Ocultar detalle' : 'Ver detalle'}</button>
         <button class="btn-ghost" data-card-del="${c.id}" style="color:var(--danger);">Eliminar</button>
       </div>
 
       ${isExpanded ? `
         <div class="divider"></div>
+        <div class="small-label">Gastos de este ciclo (con esta tarjeta)</div>
+        ${cycleGastos.length ? cycleGastos.map(e=>`
+          <div class="hist-item">
+            <div><div>${escapeHtml(e.note) || escapeHtml(catName(e.category))}</div><div class="meta">${e.date}${e.category?' · '+escapeHtml(catName(e.category)):''}</div></div>
+            <div class="amt gasto">${fmt(e.amount)}</div>
+          </div>`).join('') : `<div class="empty-state" style="padding:10px 0;">Sin gastos con esta tarjeta en el ciclo actual.</div>`}
+        <div class="small-label" style="margin-top:14px;">Pagos recientes</div>
         ${payments.length ? payments.map(p=>`
           <div class="hist-item">
             <div><div>Pago</div><div class="meta">${p.date}${p.note?' · '+escapeHtml(p.note):''}</div></div>
@@ -1800,9 +1865,9 @@ function renderInvestmentTile(inv){
 }
 
 function toCSV(){
-  const rows = [['fecha','tipo','categoria','monto','nota']];
+  const rows = [['fecha','tipo','categoria','metodo_pago','monto','nota']];
   [...state.entries].sort((a,b)=> a.date.localeCompare(b.date)).forEach(e=>{
-    rows.push([e.date, e.type, e.type==='gasto'? catName(e.category):'', e.amount, (e.note||'').replace(/,/g,';')]);
+    rows.push([e.date, e.type, e.type==='gasto'? catName(e.category):'', metodoPagoLabel(e.metodoPago)||'', e.amount, (e.note||'').replace(/,/g,';')]);
   });
   return rows.map(r=>r.join(',')).join('\n');
 }
@@ -1901,7 +1966,7 @@ function renderHistorial(){
           <div class="hist-item">
             <div>
               <div>${escapeHtml(e.note) || escapeHtml(catName(e.category)) || (e.type==='ingreso'?'Ingreso':'Ahorro')}</div>
-              <div class="meta">${e.date}${e.type==='gasto' ? ' · '+escapeHtml(catName(e.category)) : ''}</div>
+              <div class="meta">${e.date}${e.type==='gasto' ? ' · '+escapeHtml(catName(e.category))+(metodoPagoLabel(e.metodoPago)?' · '+escapeHtml(metodoPagoLabel(e.metodoPago)):'') : ''}</div>
             </div>
             <div style="display:flex;align-items:center;gap:4px;">
               <div class="amt ${e.type}">${sign}${fmt(e.amount)}</div>
@@ -2019,13 +2084,18 @@ function attachHandlers(){
       const note = document.getElementById('f-note').value;
       const type = state.entryDraft.type;
       const category = type==='gasto' ? document.getElementById('f-cat').value : null;
+      const metodoPago = type==='gasto' ? (document.getElementById('f-metodo-pago').value || null) : null;
       const fuente = type==='ingreso' ? document.getElementById('f-fuente').value : null;
       const subtype = type==='ahorro' ? state.entryDraft.subtype : null;
       const metaNombre = (type==='ahorro' && subtype==='proposito') ? document.getElementById('f-meta-nombre').value.trim() : '';
-      const entry = { id: uid(), type, category, amount: amt, note, date, fuente, subtype, metaNombre };
+      const entry = { id: uid(), type, category, amount: amt, note, date, fuente, subtype, metaNombre, metodoPago };
       const ok = await addEntryPersist(entry);
       if(!ok){ showToast('No se pudo guardar'); return; }
-      state.entryDraft = { type:'gasto', category:null, subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() };
+      if(metodoPago){
+        const card = state.config.debt.cards.find(c=>c.id===metodoPago);
+        if(card){ card.saldo += amt; await saveConfig(); }
+      }
+      state.entryDraft = { type:'gasto', category:null, metodoPago:'', subtype:'proposito', metaNombre:'', fuente:'nomina', amount:'', note:'', date: todayISO() };
       showToast('Guardado ✓');
       state.tab = 'hoy';
       render();
@@ -2248,8 +2318,13 @@ function attachHandlers(){
   if(state.tab==='historial'){
     document.querySelectorAll('[data-del]').forEach(b=>{
       b.onclick = async ()=>{
+        const entry = state.entries.find(e=>e.id===b.dataset.del);
         const ok = await deleteEntryPersist(b.dataset.del);
         if(!ok){ showToast('No se pudo eliminar'); return; }
+        if(entry && entry.type==='gasto' && entry.metodoPago){
+          const card = state.config.debt.cards.find(c=>c.id===entry.metodoPago);
+          if(card){ card.saldo = Math.max(0, card.saldo - entry.amount); await saveConfig(); }
+        }
         render();
       };
     });
@@ -2363,7 +2438,7 @@ function attachHandlers(){
           if(isCloud()){
             const userId = state.session.user.id;
             if(state.entries.length){
-              await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null })));
+              await supa.from('entries').upsert(state.entries.map(e=>({ id:e.id, user_id:userId, type:e.type, category:e.category, amount:e.amount, note:e.note, date:e.date, subtype:e.subtype||null, meta_nombre:e.metaNombre||null, fuente:e.fuente||null, metodo_pago:e.metodoPago||null })));
             }
             if(state.proyecciones.length){
               await supa.from('projections').upsert(state.proyecciones.map(p=>({ id:p.id, user_id:userId, description:p.desc, amount:p.amount, category:p.category, target_month:p.targetMonth })));

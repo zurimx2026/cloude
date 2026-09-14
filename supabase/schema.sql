@@ -92,6 +92,9 @@ create index if not exists entries_user_date_idx on entries(user_id, date desc);
 alter table entries add column if not exists subtype     text;
 alter table entries add column if not exists meta_nombre text;
 alter table entries add column if not exists fuente      text;
+-- metodo_pago: null/vacío = efectivo o débito; si no, es el id de una tarjeta
+-- (debts.id) — así sabemos qué tarjeta subir de saldo automáticamente.
+alter table entries add column if not exists metodo_pago text;
 
 -- ---------------------------------------------------------------------------
 -- Inversiones (CETES, fondos indexados, plazo fijo, etc. — type es texto libre,
